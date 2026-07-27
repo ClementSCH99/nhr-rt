@@ -13,7 +13,9 @@ pytest-cache-files-*/
 .test-temp/
 .test-temp-*/
 .tmp/
+.client-install-test/
 *.egg-info/
 dist/
 build/
 runs/
+session2-results/

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import queue
+import statistics
 import threading
 import time
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ from typing import Callable
 
 from .errors import NHRValidationError
 from .instrument import NHR9300
-from .types import Measurement
+from .types import InstrumentStatus, Measurement
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,20 @@ class AcquisitionSample:
     step: str = ""
     interlocks: str = "ok"
     error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AcquisitionStatistics:
+    """Observed timing quality for a completed or running acquisition."""
+
+    requested_rate_hz: float
+    sample_count: int
+    elapsed_s: float
+    effective_rate_hz: float
+    mean_interval_s: float | None
+    max_interval_s: float | None
+    overrun_count: int
+    error: str | None
 
 
 class AcquisitionCollector:
@@ -50,12 +65,16 @@ class AcquisitionCollector:
         instrument: NHR9300,
         rate_hz: float = 5.0,
         csv_path: Path | None = None,
+        status_refresh_interval_s: float = 1.0,
     ) -> None:
         if not 1.0 <= rate_hz <= 10.0:
             raise NHRValidationError("Acquisition rate must be between 1 and 10 Hz")
+        if status_refresh_interval_s <= 0:
+            raise NHRValidationError("Status refresh interval must be positive")
         self.instrument = instrument
         self.rate_hz = rate_hz
         self.csv_path = Path(csv_path) if csv_path else None
+        self.status_refresh_interval_s = status_refresh_interval_s
         self.latest: AcquisitionSample | None = None
         self._subscribers: list[queue.Queue[AcquisitionSample]] = []
         self._callbacks: list[Callable[[AcquisitionSample], None]] = []
@@ -64,6 +83,13 @@ class AcquisitionCollector:
         self._context_lock = threading.Lock()
         self._routine_id = ""
         self._step = ""
+        self._started_monotonic: float | None = None
+        self._stopped_monotonic: float | None = None
+        self._sample_times: list[float] = []
+        self._overrun_count = 0
+        self._statistics_lock = threading.Lock()
+        self._cached_status: InstrumentStatus | None = None
+        self._status_read_monotonic: float | None = None
         self.error: str | None = None
 
     @property
@@ -74,6 +100,8 @@ class AcquisitionCollector:
         with self._context_lock:
             self._routine_id = routine_id
             self._step = step
+        # A step transition may change state or setpoints; refresh on next row.
+        self._cached_status = None
 
     def subscribe(self, maxsize: int = 100) -> queue.Queue[AcquisitionSample]:
         target: queue.Queue[AcquisitionSample] = queue.Queue(maxsize=maxsize)
@@ -86,6 +114,14 @@ class AcquisitionCollector:
     def start(self) -> AcquisitionCollector:
         if self.running:
             return self
+        with self._statistics_lock:
+            self._started_monotonic = time.monotonic()
+            self._stopped_monotonic = None
+            self._sample_times = []
+            self._overrun_count = 0
+            self.error = None
+        self._cached_status = None
+        self._status_read_monotonic = None
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run,
@@ -99,7 +135,44 @@ class AcquisitionCollector:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout)
+            if self._thread.is_alive():
+                raise TimeoutError(
+                    f"Acquisition for {self.instrument.instrument_id} did not stop "
+                    f"within {timeout:.1f} s"
+                )
             self._thread = None
+
+    def statistics(self) -> AcquisitionStatistics:
+        """Return timing evidence without touching the instrument."""
+        with self._statistics_lock:
+            started = self._started_monotonic
+            stopped = self._stopped_monotonic
+            sample_times = list(self._sample_times)
+            overrun_count = self._overrun_count
+            error = self.error
+        if started is None:
+            elapsed = 0.0
+        else:
+            elapsed = max(0.0, (stopped or time.monotonic()) - started)
+        intervals = [
+            current - previous
+            for previous, current in zip(sample_times, sample_times[1:])
+        ]
+        observed_span = (
+            sample_times[-1] - sample_times[0] if len(sample_times) >= 2 else 0.0
+        )
+        return AcquisitionStatistics(
+            requested_rate_hz=self.rate_hz,
+            sample_count=len(sample_times),
+            elapsed_s=elapsed,
+            effective_rate_hz=(
+                (len(sample_times) - 1) / observed_span if observed_span else 0.0
+            ),
+            mean_interval_s=(statistics.fmean(intervals) if intervals else None),
+            max_interval_s=(max(intervals) if intervals else None),
+            overrun_count=overrun_count,
+            error=error,
+        )
 
     def _publish(self, sample: AcquisitionSample) -> None:
         self.latest = sample
@@ -117,7 +190,15 @@ class AcquisitionCollector:
 
     def _row(self, sample: AcquisitionSample) -> dict[str, object]:
         measurement = sample.measurement
-        status = self.instrument.read_status()
+        now = time.monotonic()
+        if (
+            self._cached_status is None
+            or self._status_read_monotonic is None
+            or now - self._status_read_monotonic >= self.status_refresh_interval_s
+        ):
+            self._cached_status = self.instrument.read_status()
+            self._status_read_monotonic = now
+        status = self._cached_status
         return {
             "timestamp_utc": measurement.timestamp_utc.isoformat(),
             "monotonic_s": f"{measurement.monotonic_s:.6f}",
@@ -158,6 +239,8 @@ class AcquisitionCollector:
                             measurement, self._routine_id, self._step
                         )
                     self._publish(sample)
+                    with self._statistics_lock:
+                        self._sample_times.append(measurement.monotonic_s)
                     if writer is not None:
                         writer.writerow(self._row(sample))
                         handle.flush()
@@ -172,7 +255,12 @@ class AcquisitionCollector:
                             self.error = f"{self.error}; emergency stop: {stop_exc}"
                     break
                 deadline += period
+                if time.monotonic() > deadline:
+                    with self._statistics_lock:
+                        self._overrun_count += 1
                 self._stop.wait(max(0.0, deadline - time.monotonic()))
         finally:
+            with self._statistics_lock:
+                self._stopped_monotonic = time.monotonic()
             if handle is not None:
                 handle.close()

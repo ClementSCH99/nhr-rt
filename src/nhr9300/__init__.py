@@ -1,6 +1,7 @@
 """Typed NHR9300 driver, acquisition and test routine toolkit."""
 
 from .backends import SimulatedBackend
+from .client import NHRServiceClient
 from .instrument import NHR9300
 from .interlocks import InterlockProvider, StaticInterlockProvider
 from .types import (
@@ -20,6 +21,7 @@ __all__ = [
     "InterlockProvider",
     "Measurement",
     "NHR9300",
+    "NHRServiceClient",
     "OperatingState",
     "SafetyLimits",
     "Setpoints",

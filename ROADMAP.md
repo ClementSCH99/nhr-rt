@@ -11,15 +11,27 @@ cycler réel.
 ## Session 2 — Valider la lecture réelle
 
 Objectif : confirmer que le backend IVI lit correctement et durablement le
-NHR9300 sans modifier son état.
+NHR9300, puis écrit les mesures dans des CSV exploitables, sans modifier
+l’état du cycler.
 
 - Exécuter le wrapper matériel en lecture seule.
 - Comparer identité, capacités, état et mesures avec PowerPanel.
 - Faire une acquisition prolongée à 1, 5 et 10 Hz.
 - Vérifier connexion, fermeture, reconnexion et erreurs de communication.
 
+Le runner `scripts/session2_readonly.py` automatise ces étapes et génère un
+rapport JSON de cadence et d’invariance d’état. L’écriture mentionnée ici
+désigne uniquement l’écriture locale des fichiers CSV; les commandes envoyées
+au NHR restent hors scope jusqu’à la session 3.
+
 Terminé lorsque les valeurs sont cohérentes, que le CSV est exploitable et
 qu’aucun changement de `Enabled` ou d’état n’est causé par la session.
+
+État au 2026-07-27 : le runner, les CSV et la reconnexion sont validés sur
+`DC PM 1` à 1, 5 et 10 Hz. Les mesures V/I/P sont cohérentes entre elles et
+l’état est resté inchangé. Il reste à comparer visuellement les valeurs avec
+PowerPanel, en particulier la température UUT observée autour de 157 °C, avant
+de fermer complètement la session 2.
 
 ## Session 3 — Valider les primitives de sécurité
 

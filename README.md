@@ -130,6 +130,11 @@ print(client.connect("sim-1"))
 print(client.measurement("sim-1"))
 ```
 
+Pour installer uniquement le client dans un autre projet et consommer le flux
+continu, voir [EXTERNAL_USE.md](EXTERNAL_USE.md). L’installation de base
+n’impose ni IVI-COM ni `comtypes`; le processus matériel utilise l’option
+d’installation `ivi`.
+
 Le service n’accepte qu’une adresse locale. Routes principales :
 
 - `GET /instruments`
@@ -138,6 +143,55 @@ Le service n’accepte qu’une adresse locale. Routes principales :
 - `POST /instruments/{id}/limits`, `/arm`, `/command`
 - `POST /instruments/{id}/routine` et `/stop`
 - `GET /instruments/{id}/routine`
+
+## Session 2 : lecture continue vers CSV
+
+Cette étape ne programme rien dans le NHR. Le flux est volontairement simple :
+
+```text
+NHR réel
+   ↓  lectures IVI-COM sérialisées
+NHR9300
+   ↓  échantillons horodatés
+AcquisitionCollector
+   ├─→ dernier échantillon / abonnés
+   └─→ fichier CSV + statistiques de cadence
+```
+
+- `IVIBackend` connaît le vocabulaire du driver officiel et lit les valeurs.
+- `NHR9300` garantit qu’un seul thread accède à COM, ce qui évite les accès
+  concurrents difficiles à diagnostiquer.
+- `AcquisitionCollector` décide quand lire, écrit chaque ligne immédiatement
+  et ferme proprement le fichier à l’arrêt. Les mesures V/I/P sont lues à la
+  cadence demandée; l’état et les consignes, plus coûteux via COM et beaucoup
+  moins variables, sont rafraîchis une fois par seconde (et à chaque changement
+  d’étape) puis répétés dans les lignes intermédiaires.
+- `session2_readonly.py` orchestre la validation du banc. Il ne reçoit qu’une
+  interface de lecture, compare l’état avant/après, teste 1/5/10 Hz et produit
+  un rapport JSON à côté des CSV.
+
+Lancer une validation courte :
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path .\src).Path
+$env:NHR9300_RESOURCE = "DC PM 1"
+.\.venv32\Scripts\python.exe .\scripts\session2_readonly.py `
+  --duration 10 --output .\session2-results
+```
+
+Puis lancer la validation nominale (60 secondes par cadence et deux
+reconnexions) en omettant `--duration`. Chaque CSV est vidé sur disque après
+chaque ligne. Le rapport `report.json` contient le nombre d’échantillons, la
+cadence effective, l’intervalle moyen et maximal, les dépassements de période,
+les états avant/après et le résultat des reconnexions.
+
+Une session est acceptée seulement si :
+
+- les trois phases terminent sans erreur de communication;
+- `enabled`, l’état d’opération et toutes les consignes restent inchangés;
+- les CSV contiennent autant de lignes que le compteur d’échantillons;
+- la cadence et les intervalles observés sont cohérents avec 1, 5 et 10 Hz;
+- les reconnexions réussissent sans changer l’état du module.
 
 Dans [service.hardware.example.json](examples/service.hardware.example.json),
 `operator_supervised` est volontairement `false`; l’armement est donc refusé

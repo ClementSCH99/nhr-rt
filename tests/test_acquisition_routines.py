@@ -105,6 +105,76 @@ def test_example_yaml_is_safe_by_default() -> None:
     assert loaded.steps[0].limits.approved is False
 
 
+def test_acquisition_reports_csv_and_timing_quality(tmp_path) -> None:
+    instrument, collector = setup(tmp_path, "timing")
+    collector.start()
+    time.sleep(0.35)
+    collector.stop()
+    statistics = collector.statistics()
+    instrument.close()
+
+    with (tmp_path / "timing.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert statistics.error is None
+    assert statistics.sample_count == len(rows)
+    assert statistics.sample_count >= 3
+    assert statistics.effective_rate_hz > 0
+    assert statistics.mean_interval_s is not None
+    assert statistics.max_interval_s is not None
+
+
+def test_acquisition_statistics_reset_on_restart(tmp_path) -> None:
+    instrument, collector = setup(tmp_path, "restart")
+    collector.start()
+    time.sleep(0.25)
+    collector.stop()
+    first_count = collector.statistics().sample_count
+
+    collector.start()
+    time.sleep(0.15)
+    collector.stop()
+    second_count = collector.statistics().sample_count
+    instrument.close()
+
+    assert first_count >= 2
+    assert 1 <= second_count < first_count + second_count
+
+
+def test_status_is_cached_but_refreshed_on_step_change(tmp_path) -> None:
+    backend = SimulatedBackend("status-cache")
+    instrument = NHR9300(
+        "status-cache",
+        backend,
+        interlocks=[StaticInterlockProvider()],
+    )
+    instrument.connect()
+    calls = 0
+    original = instrument.read_status
+
+    def counted_status():
+        nonlocal calls
+        calls += 1
+        return original()
+
+    instrument.read_status = counted_status  # type: ignore[method-assign]
+    collector = AcquisitionCollector(
+        instrument,
+        rate_hz=10,
+        csv_path=tmp_path / "status-cache.csv",
+        status_refresh_interval_s=10,
+    )
+    collector.start()
+    time.sleep(0.25)
+    collector.set_context(step="next")
+    time.sleep(0.2)
+    collector.stop()
+    instrument.close()
+
+    assert collector.statistics().sample_count >= 4
+    assert calls == 2
+
+
 def test_runtime_interlock_failure_disables_output(tmp_path) -> None:
     interlock = StaticInterlockProvider()
     backend = SimulatedBackend("unsafe")
