@@ -1,0 +1,15 @@
+{
+  "output_dir": "runs",
+  "instruments": [
+    {
+      "id": "sim-1",
+      "backend": "simulator",
+      "rate_hz": 5
+    },
+    {
+      "id": "sim-2",
+      "backend": "simulator",
+      "rate_hz": 5
+    }
+  ]
+}

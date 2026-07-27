@@ -1,0 +1,19 @@
+# Python virtual environments and generated files
+.venv/
+.venv32/
+__pycache__/
+*.py[cod]
+
+# Local editor and test output
+.vscode/
+.idea/
+*.log
+.pytest_cache/
+pytest-cache-files-*/
+.test-temp/
+.test-temp-*/
+.tmp/
+*.egg-info/
+dist/
+build/
+runs/

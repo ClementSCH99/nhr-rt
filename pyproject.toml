@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nhr9300"
+version = "0.1.0"
+description = "Safe, typed Python driver and test runner for NH Research NHR9300 cyclers"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "comtypes==1.4.16; platform_system == 'Windows'",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+nhr9300-service = "nhr9300.service:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "hardware_readonly: requires a configured physical NHR9300; never writes",
+    "hardware_energizing: may energize a physical NHR9300; requires explicit opt-in",
+]
+

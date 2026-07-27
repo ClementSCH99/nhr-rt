@@ -1,0 +1,25 @@
+# EXAMPLE ONLY. Replace every value with limits approved for the actual battery.
+name: supervised-low-current-hold
+mode: discharge
+current_a: 1.0
+voltage_v: 300.0
+power_w: 500.0
+duration_s: 5.0
+arm_duration_s: 30.0
+limits:
+  charge_current: 2.0
+  charge_voltage_max: 420.0
+  charge_power: 1000.0
+  discharge_current: 2.0
+  discharge_voltage_min: 280.0
+  discharge_power: 1000.0
+  current_delay_s: 0.1
+  voltage_delay_s: 0.1
+  power_delay_s: 0.1
+  uut_temperature_max: 40.0
+  approved: false
+  profile_name: REPLACE_WITH_APPROVED_PROFILE
+termination:
+  field: voltage
+  operator: <=
+  value: 285.0
