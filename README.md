@@ -156,6 +156,16 @@ fréquence observée, le chemin CSV effectif et la dernière erreur. Chaque
 démarrage d’acquisition réserve un nouveau nom UTC horodaté; un CSV précédent
 n’est donc jamais écrasé.
 
+Une fermeture normale du flux SSE est journalisée en une ligne `INFO` et ne
+stoppe pas l’acquisition. Une erreur d’acquisition reste exposée par
+`last_error` et est journalisée en `ERROR`; une anomalie inattendue du
+gestionnaire SSE conserve son traceback. Les abonnements sont retirés à la
+fermeture du flux afin que les reconnexions n’accumulent pas de queues.
+
+Pour fermer le service, utilisez `Ctrl+C` dans son terminal. Cette interruption
+opérateur est traitée comme un arrêt normal : le service ferme les acquisitions,
+les sessions instrument et le serveur, puis confirme son arrêt sans traceback.
+
 ## Session 2 : lecture continue vers CSV
 
 Cette étape ne programme rien dans le NHR. Le flux est volontairement simple :

@@ -170,6 +170,26 @@ def test_each_acquisition_uses_a_unique_timestamped_csv(tmp_path) -> None:
     assert second_path.name.startswith("unique_")
 
 
+def test_subscribers_can_be_removed_without_affecting_acquisition(tmp_path) -> None:
+    instrument, collector = setup(tmp_path, "subscribers")
+    first = collector.subscribe()
+    second = collector.subscribe()
+    assert collector.subscriber_count == 2
+
+    collector.unsubscribe(first)
+    collector.unsubscribe(first)
+    assert collector.subscriber_count == 1
+
+    collector.start()
+    sample = second.get(timeout=1)
+    collector.unsubscribe(second)
+    collector.stop()
+    instrument.close()
+
+    assert sample.measurement.instrument_id == "subscribers"
+    assert collector.subscriber_count == 0
+
+
 def test_acquisition_statistics_reset_on_restart(tmp_path) -> None:
     instrument, collector = setup(tmp_path, "restart")
     collector.start()

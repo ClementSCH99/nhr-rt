@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import queue
 import threading
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from .instrument import NHR9300
 from .interlocks import StaticInterlockProvider
 from .routines import RoutineRunner, routine_from_mapping
 from .types import OperatingState, SafetyLimits, Setpoints, to_jsonable
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -125,6 +128,7 @@ class InstrumentManager:
 class NHRRequestHandler(BaseHTTPRequestHandler):
     manager: InstrumentManager
     server_version = "NHR9300Service/0.1"
+    stream_keepalive_interval_s = 10.0
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -198,21 +202,61 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
         if not managed.collector.running:
             managed.collector.start()
         subscriber = managed.collector.subscribe()
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-        while managed.collector.running:
-            try:
-                sample = subscriber.get(timeout=10.0)
-                data = json.dumps(to_jsonable(sample.measurement))
-                self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
-            except queue.Empty:
-                self.wfile.write(b": keep-alive\n\n")
-            except (BrokenPipeError, ConnectionResetError):
-                return
-            self.wfile.flush()
+        instrument_id = managed.instrument.instrument_id
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            while managed.collector.running:
+                try:
+                    sample = subscriber.get(
+                        timeout=self.stream_keepalive_interval_s
+                    )
+                    data = json.dumps(to_jsonable(sample.measurement))
+                    payload = f"data: {data}\n\n".encode("utf-8")
+                except queue.Empty:
+                    payload = b": keep-alive\n\n"
+                self.wfile.write(payload)
+                self.wfile.flush()
+            if managed.collector.error:
+                LOGGER.error(
+                    "SSE stream ended because acquisition stopped: "
+                    "instrument=%s error=%s csv=%s",
+                    instrument_id,
+                    managed.collector.error,
+                    managed.collector.csv_path,
+                )
+            else:
+                LOGGER.info(
+                    "SSE stream ended after acquisition stopped: instrument=%s",
+                    instrument_id,
+                )
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
+            LOGGER.info(
+                "SSE client disconnected: instrument=%s client=%s reason=%s",
+                instrument_id,
+                self.client_address,
+                exc,
+            )
+        except OSError:
+            LOGGER.exception(
+                "Unexpected SSE transport error: instrument=%s client=%s",
+                instrument_id,
+                self.client_address,
+            )
+        except Exception:
+            LOGGER.exception(
+                "Unexpected SSE handler error: instrument=%s client=%s",
+                instrument_id,
+                self.client_address,
+            )
+        finally:
+            managed.collector.unsubscribe(subscriber)
+            # An SSE response cannot be reused for another HTTP request. Ensure
+            # clients observe EOF when acquisition or the handler terminates.
+            self.close_connection = True
 
     def do_POST(self) -> None:
         try:
@@ -325,12 +369,20 @@ def serve(
     server, manager = build_server(config, host, port, config_path=config_path)
     try:
         server.serve_forever()
+    except KeyboardInterrupt:
+        LOGGER.info("Service shutdown requested by operator (Ctrl+C)")
     finally:
+        LOGGER.info("Closing NHR9300 service")
         manager.close()
         server.server_close()
+        LOGGER.info("NHR9300 service stopped")
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     parser = argparse.ArgumentParser(description="Run the local NHR9300 service")
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--host", default="127.0.0.1")

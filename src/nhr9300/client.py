@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any, Iterator, Mapping
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -84,13 +85,22 @@ class NHRServiceClient:
     def stop(self, instrument_id: str) -> dict[str, Any]:
         return self._request("POST", f"/instruments/{instrument_id}/stop", {})
 
-    def stream(self, instrument_id: str) -> Iterator[dict[str, Any]]:
+    def stream(
+        self,
+        instrument_id: str,
+        *,
+        stop_event: threading.Event | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        if stop_event is not None and stop_event.is_set():
+            return
         request = Request(
             self.base_url + f"/instruments/{instrument_id}/stream",
             headers={"Accept": "text/event-stream"},
         )
         with urlopen(request, timeout=None) as response:
             for raw_line in response:
+                if stop_event is not None and stop_event.is_set():
+                    return
                 line = raw_line.decode("utf-8").strip()
                 if line.startswith("data: "):
                     yield json.loads(line[6:])

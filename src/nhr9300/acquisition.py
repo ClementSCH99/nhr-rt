@@ -91,6 +91,7 @@ class AcquisitionCollector:
         self.status_refresh_interval_s = status_refresh_interval_s
         self.latest: AcquisitionSample | None = None
         self._subscribers: list[queue.Queue[AcquisitionSample]] = []
+        self._subscribers_lock = threading.Lock()
         self._callbacks: list[Callable[[AcquisitionSample], None]] = []
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -133,8 +134,21 @@ class AcquisitionCollector:
 
     def subscribe(self, maxsize: int = 100) -> queue.Queue[AcquisitionSample]:
         target: queue.Queue[AcquisitionSample] = queue.Queue(maxsize=maxsize)
-        self._subscribers.append(target)
+        with self._subscribers_lock:
+            self._subscribers.append(target)
         return target
+
+    def unsubscribe(self, target: queue.Queue[AcquisitionSample]) -> None:
+        with self._subscribers_lock:
+            try:
+                self._subscribers.remove(target)
+            except ValueError:
+                pass
+
+    @property
+    def subscriber_count(self) -> int:
+        with self._subscribers_lock:
+            return len(self._subscribers)
 
     def add_callback(self, callback: Callable[[AcquisitionSample], None]) -> None:
         self._callbacks.append(callback)
@@ -223,7 +237,9 @@ class AcquisitionCollector:
 
     def _publish(self, sample: AcquisitionSample) -> None:
         self.latest = sample
-        for target in list(self._subscribers):
+        with self._subscribers_lock:
+            subscribers = list(self._subscribers)
+        for target in subscribers:
             try:
                 target.put_nowait(sample)
             except queue.Full:

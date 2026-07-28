@@ -3,7 +3,9 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+import logging
 
+import nhr9300.service as service_module
 from nhr9300.client import NHRServiceClient
 from nhr9300.service import build_server
 
@@ -74,3 +76,157 @@ def test_startup_summary_and_effective_configuration(tmp_path, capsys) -> None:
     finally:
         manager.close()
         server.server_close()
+
+
+def test_stream_stop_event_closes_subscription_without_stopping_acquisition(
+    tmp_path,
+) -> None:
+    server, manager = build_server(
+        {
+            "output_dir": str(tmp_path),
+            "instruments": [{"id": "sim-stop", "backend": "simulator"}],
+        },
+        port=0,
+        announce=False,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    stop_event = threading.Event()
+    samples = []
+
+    def consume() -> None:
+        for sample in client.stream("sim-stop", stop_event=stop_event):
+            samples.append(sample)
+            stop_event.set()
+
+    consumer = threading.Thread(target=consume)
+    try:
+        client.connect("sim-stop")
+        consumer.start()
+        consumer.join(timeout=2)
+        assert not consumer.is_alive()
+
+        managed = manager.get("sim-stop")
+        deadline = time.monotonic() + 1
+        while managed.collector.subscriber_count:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+
+        assert samples
+        assert managed.collector.running is True
+        assert managed.collector.subscriber_count == 0
+    finally:
+        stop_event.set()
+        consumer.join(timeout=2)
+        client.disconnect("sim-stop")
+        server.shutdown()
+        thread.join()
+        manager.close()
+        server.server_close()
+
+
+def test_closed_sse_client_is_logged_without_error_traceback(
+    tmp_path, caplog
+) -> None:
+    caplog.set_level(logging.INFO, logger="nhr9300.service")
+    server, manager = build_server(
+        {
+            "output_dir": str(tmp_path),
+            "instruments": [{"id": "sim-close", "backend": "simulator"}],
+        },
+        port=0,
+        announce=False,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        client.connect("sim-close")
+        managed = manager.get("sim-close")
+        for _ in range(3):
+            stream = client.stream("sim-close")
+            next(stream)
+            stream.close()
+            deadline = time.monotonic() + 2
+            while managed.collector.subscriber_count:
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+
+        assert managed.collector.running is True
+        assert managed.collector.subscriber_count == 0
+        assert not [
+            record
+            for record in caplog.records
+            if record.levelno >= logging.WARNING
+        ]
+    finally:
+        client.disconnect("sim-close")
+        server.shutdown()
+        thread.join()
+        manager.close()
+        server.server_close()
+
+
+def test_acquisition_failure_is_logged_as_error_and_exposed(tmp_path, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="nhr9300.service")
+    server, manager = build_server(
+        {
+            "output_dir": str(tmp_path),
+            "instruments": [{"id": "sim-error", "backend": "simulator"}],
+        },
+        port=0,
+        announce=False,
+    )
+    server.RequestHandlerClass.stream_keepalive_interval_s = 0.05
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        assert list(client.stream("sim-error")) == []
+        state = client.acquisition("sim-error")
+
+        assert state["last_error"]
+        assert any(
+            record.levelno == logging.ERROR
+            and "acquisition stopped" in record.getMessage()
+            for record in caplog.records
+        )
+    finally:
+        server.shutdown()
+        thread.join()
+        manager.close()
+        server.server_close()
+
+
+def test_ctrl_c_stops_service_cleanly(monkeypatch, caplog) -> None:
+    events = []
+
+    class FakeServer:
+        def serve_forever(self) -> None:
+            events.append("serve")
+            raise KeyboardInterrupt
+
+        def server_close(self) -> None:
+            events.append("server_close")
+
+    class FakeManager:
+        def close(self) -> None:
+            events.append("manager_close")
+
+    monkeypatch.setattr(
+        service_module,
+        "build_server",
+        lambda *args, **kwargs: (FakeServer(), FakeManager()),
+    )
+    caplog.set_level(logging.INFO, logger="nhr9300.service")
+
+    service_module.serve({})
+
+    assert events == ["serve", "manager_close", "server_close"]
+    messages = [record.getMessage() for record in caplog.records]
+    assert "Service shutdown requested by operator (Ctrl+C)" in messages
+    assert "NHR9300 service stopped" in messages

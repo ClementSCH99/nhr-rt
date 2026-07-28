@@ -76,6 +76,23 @@ for measurement in client.stream(instrument_id):
 `can-py` doit lire le bus CAN en parallèle. Ne faites pas de traitement lent
 dans cette boucle; placez plutôt chaque mesure dans une `queue.Queue`.
 
+Pour arrêter ce thread proprement, passez un `threading.Event` facultatif :
+
+```python
+import threading
+
+stop_nhr = threading.Event()
+
+for sample in client.stream("nhr-79503", stop_event=stop_nhr):
+    nhr_samples.put(sample)
+```
+
+À l’arrêt, positionnez d’abord `stop_nhr`, attendez la fin du thread avec
+`join()`, puis appelez `disconnect()`. N’appelez pas `disconnect()` pendant
+que le thread consomme encore le flux. Une coupure inattendue doit déclencher
+une lecture de `client.acquisition(...)` : un `last_error` non vide indique une
+erreur réelle d’acquisition, contrairement à une simple perte de transport.
+
 ```python
 import queue
 import threading
