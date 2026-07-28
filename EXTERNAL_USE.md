@@ -59,7 +59,9 @@ client = NHRServiceClient("http://127.0.0.1:9300")
 instrument_id = "nhr-79503"  # champ "id" du fichier de configuration
 
 print(client.instruments())
+print(client.configuration())
 client.connect(instrument_id)
+print(client.acquisition(instrument_id))  # état effectif et chemin CSV unique
 
 for measurement in client.stream(instrument_id):
     timestamp = measurement["timestamp_utc"]
@@ -110,6 +112,11 @@ ne doit pas être comparé à l’horloge monotone d’un autre processus.
 
 L’agrégateur devrait enregistrer l’âge de chaque source. Une donnée BMS ou NHR
 périmée ne doit pas être traitée comme une mesure actuelle.
+
+Le fichier JSON du service est chargé une seule fois. Après toute modification
+de ce fichier, redémarrez `nhr9300-service`; la v1 n’implémente pas de hot
+reload. Le chemin retourné par `acquisition()` est le fichier CSV horodaté de
+l’acquisition courante (ou de la dernière acquisition).
 
 ## Limite de responsabilité
 

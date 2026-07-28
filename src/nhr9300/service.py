@@ -28,11 +28,20 @@ class ManagedInstrument:
     instrument: NHR9300
     collector: AcquisitionCollector
     runner: RoutineRunner
+    backend_name: str
 
 
 class InstrumentManager:
-    def __init__(self, config: Mapping[str, Any]) -> None:
+    def __init__(
+        self,
+        config: Mapping[str, Any],
+        *,
+        config_path: Path | None = None,
+        listen_url: str = "",
+    ) -> None:
         self.instruments: dict[str, ManagedInstrument] = {}
+        self.config_path = config_path
+        self.listen_url = listen_url
         output_dir = Path(str(config.get("output_dir", "runs")))
         for item in config.get("instruments", []):
             instrument_id = str(item["id"])
@@ -63,7 +72,10 @@ class InstrumentManager:
                 csv_path=output_dir / f"{instrument_id}.csv",
             )
             self.instruments[instrument_id] = ManagedInstrument(
-                instrument, collector, RoutineRunner(instrument, collector)
+                instrument,
+                collector,
+                RoutineRunner(instrument, collector),
+                backend_name,
             )
 
     def get(self, instrument_id: str) -> ManagedInstrument:
@@ -81,6 +93,26 @@ class InstrumentManager:
             except Exception:
                 result.append({"instrument_id": instrument_id, "connected": False})
         return result
+
+    def configuration(self) -> dict[str, Any]:
+        return {
+            "config_file": str(self.config_path) if self.config_path else None,
+            "listen_url": self.listen_url,
+            "restart_required_for_config_changes": True,
+            "instruments": [
+                {
+                    "instrument_id": instrument_id,
+                    "backend": managed.backend_name,
+                    "requested_rate_hz": managed.collector.rate_hz,
+                    "csv_path": (
+                        str(managed.collector.csv_path)
+                        if managed.collector.csv_path is not None
+                        else None
+                    ),
+                }
+                for instrument_id, managed in self.instruments.items()
+            ],
+        }
 
     def close(self) -> None:
         for managed in self.instruments.values():
@@ -118,6 +150,8 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
         parts = [part for part in urlparse(self.path).path.split("/") if part]
         if len(parts) == 1 and parts[0] == "instruments":
             return None, "inventory"
+        if len(parts) == 1 and parts[0] == "configuration":
+            return None, "configuration"
         if len(parts) >= 2 and parts[0] == "instruments":
             return parts[1], parts[2] if len(parts) > 2 else "status"
         return None, None
@@ -127,6 +161,9 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
             instrument_id, action = self._route()
             if action == "inventory":
                 self._send(HTTPStatus.OK, self.manager.inventory())
+                return
+            if action == "configuration":
+                self._send(HTTPStatus.OK, self.manager.configuration())
                 return
             if instrument_id is None:
                 self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
@@ -148,6 +185,8 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
                     managed.runner.result
                     or {"state": "idle", "instrument_id": instrument_id},
                 )
+            elif action == "acquisition":
+                self._send(HTTPStatus.OK, managed.collector.state())
             elif action == "stream":
                 self._stream(managed)
             else:
@@ -247,18 +286,43 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
 
 
 def build_server(
-    config: Mapping[str, Any], host: str = "127.0.0.1", port: int = 9300
+    config: Mapping[str, Any],
+    host: str = "127.0.0.1",
+    port: int = 9300,
+    *,
+    config_path: Path | None = None,
+    announce: bool = True,
 ) -> tuple[ThreadingHTTPServer, InstrumentManager]:
     if host not in ("127.0.0.1", "localhost", "::1"):
         raise NHRValidationError("The v1 service may bind to localhost only")
-    manager = InstrumentManager(config)
+    manager = InstrumentManager(config, config_path=config_path)
     handler = type("ConfiguredNHRHandler", (NHRRequestHandler,), {"manager": manager})
     server = ThreadingHTTPServer((host, port), handler)
+    bound_host, bound_port = server.server_address[:2]
+    manager.listen_url = f"http://{bound_host}:{bound_port}"
+    if announce:
+        details = manager.configuration()
+        print(f"NHR9300 config: {details['config_file'] or '<mapping>'}", flush=True)
+        print(f"NHR9300 listening: {details['listen_url']}", flush=True)
+        for item in details["instruments"]:
+            print(
+                "NHR9300 instrument: "
+                f"{item['instrument_id']} backend={item['backend']} "
+                f"rate={item['requested_rate_hz']:g} Hz "
+                f"csv={item['csv_path']}",
+                flush=True,
+            )
     return server, manager
 
 
-def serve(config: Mapping[str, Any], host: str = "127.0.0.1", port: int = 9300) -> None:
-    server, manager = build_server(config, host, port)
+def serve(
+    config: Mapping[str, Any],
+    host: str = "127.0.0.1",
+    port: int = 9300,
+    *,
+    config_path: Path | None = None,
+) -> None:
+    server, manager = build_server(config, host, port, config_path=config_path)
     try:
         server.serve_forever()
     finally:
@@ -273,7 +337,7 @@ def main() -> None:
     parser.add_argument("--port", default=9300, type=int)
     args = parser.parse_args()
     config = json.loads(args.config.read_text(encoding="utf-8"))
-    serve(config, args.host, args.port)
+    serve(config, args.host, args.port, config_path=args.config.resolve())
 
 
 if __name__ == "__main__":

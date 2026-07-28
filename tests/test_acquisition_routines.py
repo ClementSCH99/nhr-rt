@@ -63,7 +63,7 @@ def test_routine_passes_and_returns_safe_state(tmp_path) -> None:
     assert result.state == RoutineState.PASSED
     assert status.state == OperatingState.STANDBY
     assert status.enabled is False
-    with (tmp_path / "sim.csv").open(newline="", encoding="utf-8") as handle:
+    with collector.csv_path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     assert rows
     assert {
@@ -113,7 +113,7 @@ def test_acquisition_reports_csv_and_timing_quality(tmp_path) -> None:
     statistics = collector.statistics()
     instrument.close()
 
-    with (tmp_path / "timing.csv").open(newline="", encoding="utf-8") as handle:
+    with collector.csv_path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
 
     assert statistics.error is None
@@ -122,6 +122,52 @@ def test_acquisition_reports_csv_and_timing_quality(tmp_path) -> None:
     assert statistics.effective_rate_hz > 0
     assert statistics.mean_interval_s is not None
     assert statistics.max_interval_s is not None
+
+
+def test_simulated_acquisition_supports_1_5_and_10_hz(tmp_path) -> None:
+    for rate_hz in (1, 5, 10):
+        instrument = NHR9300(
+            f"rate-{rate_hz}",
+            SimulatedBackend(f"rate-{rate_hz}"),
+            interlocks=[StaticInterlockProvider()],
+        )
+        instrument.connect()
+        collector = AcquisitionCollector(
+            instrument,
+            rate_hz=rate_hz,
+            csv_path=tmp_path / f"rate-{rate_hz}.csv",
+        )
+        collector.start()
+        time.sleep((2.2 / rate_hz) + 0.05)
+        collector.stop()
+        state = collector.state()
+        instrument.close()
+
+        assert state.requested_rate_hz == rate_hz
+        assert state.sample_count >= 2
+        assert state.first_sample_at is not None
+        assert state.observed_rate_hz > 0
+        assert state.last_error is None
+
+
+def test_each_acquisition_uses_a_unique_timestamped_csv(tmp_path) -> None:
+    instrument, collector = setup(tmp_path, "unique")
+    collector.start()
+    time.sleep(0.05)
+    collector.stop()
+    first_path = collector.csv_path
+
+    collector.start()
+    time.sleep(0.05)
+    collector.stop()
+    second_path = collector.csv_path
+    instrument.close()
+
+    assert first_path != second_path
+    assert first_path.exists()
+    assert second_path.exists()
+    assert first_path.name.startswith("unique_")
+    assert second_path.name.startswith("unique_")
 
 
 def test_acquisition_statistics_reset_on_restart(tmp_path) -> None:

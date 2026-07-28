@@ -34,6 +34,9 @@ class NHRServiceClient:
     def instruments(self) -> list[dict[str, Any]]:
         return self._request("GET", "/instruments")
 
+    def configuration(self) -> dict[str, Any]:
+        return self._request("GET", "/configuration")
+
     def connect(self, instrument_id: str) -> dict[str, Any]:
         return self._request("POST", f"/instruments/{instrument_id}/connect", {})
 
@@ -45,6 +48,9 @@ class NHRServiceClient:
 
     def measurement(self, instrument_id: str) -> dict[str, Any]:
         return self._request("GET", f"/instruments/{instrument_id}/measurement")
+
+    def acquisition(self, instrument_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/instruments/{instrument_id}/acquisition")
 
     def configure_limits(
         self, instrument_id: str, limits: Mapping[str, Any]

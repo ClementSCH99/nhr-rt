@@ -137,12 +137,24 @@ d’installation `ivi`.
 
 Le service n’accepte qu’une adresse locale. Routes principales :
 
+- `GET /configuration` (configuration effective chargée au démarrage)
 - `GET /instruments`
 - `POST /instruments/{id}/connect` et `/disconnect`
-- `GET /instruments/{id}`, `/measurement` et `/stream`
+- `GET /instruments/{id}`, `/measurement`, `/acquisition` et `/stream`
 - `POST /instruments/{id}/limits`, `/arm`, `/command`
 - `POST /instruments/{id}/routine` et `/stop`
 - `GET /instruments/{id}/routine`
+
+Au démarrage, le service affiche le chemin absolu du JSON chargé, l’URL
+d’écoute et, pour chaque instrument, son backend, sa fréquence demandée et le
+prochain chemin CSV. Le JSON est lu **une seule fois au démarrage** : toute
+modification exige un redémarrage du service. La v1 ne fait aucun hot reload.
+
+`GET /instruments/{id}/acquisition` retourne la fréquence demandée,
+`active`, le compteur d’échantillons, l’heure du premier échantillon, la
+fréquence observée, le chemin CSV effectif et la dernière erreur. Chaque
+démarrage d’acquisition réserve un nouveau nom UTC horodaté; un CSV précédent
+n’est donc jamais écrasé.
 
 ## Session 2 : lecture continue vers CSV
 

@@ -71,7 +71,7 @@ def acquire_phase(
     return {
         "rate_hz": rate_hz,
         "duration_s": duration_s,
-        "csv_path": str(csv_path),
+        "csv_path": str(collector.csv_path),
         "statistics": asdict(collector.statistics()),
         "status_before": to_jsonable(before),
         "status_after": to_jsonable(after),

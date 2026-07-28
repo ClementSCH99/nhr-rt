@@ -204,11 +204,11 @@ class RoutineRunner:
     def _execute(self, routine: Routine, result: RoutineResult) -> None:
         result.state = RoutineState.RUNNING
         result.started_at = datetime.now(timezone.utc)
+        self.collector.start()
         result.csv_path = (
             str(self.collector.csv_path) if self.collector.csv_path is not None else None
         )
         context = RoutineContext(self.instrument, self.collector, self._stop)
-        self.collector.start()
         try:
             for index, step in enumerate(routine.steps):
                 step_name = f"{index:02d}_{step.name}"

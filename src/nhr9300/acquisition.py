@@ -8,6 +8,7 @@ import statistics
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -37,6 +38,17 @@ class AcquisitionStatistics:
     max_interval_s: float | None
     overrun_count: int
     error: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class AcquisitionState:
+    requested_rate_hz: float
+    active: bool
+    sample_count: int
+    first_sample_at: datetime | None
+    observed_rate_hz: float
+    csv_path: str | None
+    last_error: str | None
 
 
 class AcquisitionCollector:
@@ -73,7 +85,9 @@ class AcquisitionCollector:
             raise NHRValidationError("Status refresh interval must be positive")
         self.instrument = instrument
         self.rate_hz = rate_hz
-        self.csv_path = Path(csv_path) if csv_path else None
+        self._csv_template = Path(csv_path) if csv_path else None
+        self.csv_path = self._unique_csv_path() if self._csv_template else None
+        self._has_started = False
         self.status_refresh_interval_s = status_refresh_interval_s
         self.latest: AcquisitionSample | None = None
         self._subscribers: list[queue.Queue[AcquisitionSample]] = []
@@ -86,11 +100,25 @@ class AcquisitionCollector:
         self._started_monotonic: float | None = None
         self._stopped_monotonic: float | None = None
         self._sample_times: list[float] = []
+        self._first_sample_at: datetime | None = None
         self._overrun_count = 0
         self._statistics_lock = threading.Lock()
         self._cached_status: InstrumentStatus | None = None
         self._status_read_monotonic: float | None = None
         self.error: str | None = None
+
+    def _unique_csv_path(self) -> Path:
+        assert self._csv_template is not None
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+        template = self._csv_template
+        candidate = template.with_name(f"{template.stem}_{stamp}{template.suffix}")
+        index = 1
+        while candidate.exists():
+            candidate = template.with_name(
+                f"{template.stem}_{stamp}_{index}{template.suffix}"
+            )
+            index += 1
+        return candidate
 
     @property
     def running(self) -> bool:
@@ -114,12 +142,17 @@ class AcquisitionCollector:
     def start(self) -> AcquisitionCollector:
         if self.running:
             return self
+        if self._csv_template is not None and self._has_started:
+            self.csv_path = self._unique_csv_path()
+        self._has_started = True
         with self._statistics_lock:
             self._started_monotonic = time.monotonic()
             self._stopped_monotonic = None
             self._sample_times = []
+            self._first_sample_at = None
             self._overrun_count = 0
             self.error = None
+            self.latest = None
         self._cached_status = None
         self._status_read_monotonic = None
         self._stop.clear()
@@ -130,6 +163,20 @@ class AcquisitionCollector:
         )
         self._thread.start()
         return self
+
+    def state(self) -> AcquisitionState:
+        stats = self.statistics()
+        with self._statistics_lock:
+            first_sample = self._first_sample_at
+        return AcquisitionState(
+            requested_rate_hz=self.rate_hz,
+            active=self.running,
+            sample_count=stats.sample_count,
+            first_sample_at=first_sample,
+            observed_rate_hz=stats.effective_rate_hz,
+            csv_path=str(self.csv_path) if self.csv_path is not None else None,
+            last_error=stats.error,
+        )
 
     def stop(self, timeout: float = 3.0) -> None:
         self._stop.set()
@@ -240,6 +287,8 @@ class AcquisitionCollector:
                         )
                     self._publish(sample)
                     with self._statistics_lock:
+                        if self._first_sample_at is None:
+                            self._first_sample_at = measurement.timestamp_utc
                         self._sample_times.append(measurement.monotonic_s)
                     if writer is not None:
                         writer.writerow(self._row(sample))

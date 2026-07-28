@@ -5,7 +5,7 @@
       "id": "nhr-79503",
       "backend": "ivi",
       "logical_name": "DC PM 1",
-      "rate_hz": 5,
+      "rate_hz": 10,
       "operator_supervised": false
     }
   ]
