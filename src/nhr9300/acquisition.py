@@ -188,7 +188,9 @@ class AcquisitionCollector:
             sample_count=stats.sample_count,
             first_sample_at=first_sample,
             observed_rate_hz=stats.effective_rate_hz,
-            csv_path=str(self.csv_path) if self.csv_path is not None else None,
+            csv_path=(
+                str(self.csv_path.resolve()) if self.csv_path is not None else None
+            ),
             last_error=stats.error,
         )
 

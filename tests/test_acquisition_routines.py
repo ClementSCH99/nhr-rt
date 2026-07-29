@@ -148,6 +148,7 @@ def test_simulated_acquisition_supports_1_5_and_10_hz(tmp_path) -> None:
         assert state.first_sample_at is not None
         assert state.observed_rate_hz > 0
         assert state.last_error is None
+        assert state.csv_path == str(collector.csv_path.resolve())
 
 
 def test_each_acquisition_uses_a_unique_timestamped_csv(tmp_path) -> None:
