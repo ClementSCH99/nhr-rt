@@ -154,8 +154,13 @@ def test_phase_b_treats_setstate_as_activation_and_cleans_up() -> None:
     assert result.active_status.enabled is True
     assert result.active_status.state == OperatingState.DISCHARGE
     assert result.active_measurements
-    assert result.active_measurements[0].current_a == pytest.approx(0.5)
+    assert result.active_measurements[0].current_a == pytest.approx(-0.5)
+    assert result.expected_current_delta_a == pytest.approx(-0.5)
+    assert result.observed_current_delta_a == pytest.approx(-0.5)
     assert result.final_status.enabled is False
+    assert result.final_status.setpoints.current_enabled is False
+    assert result.final_status.setpoints.voltage_enabled is False
+    assert result.final_status.setpoints.power_enabled is False
     assert instrument.may_be_energized is False
 
 

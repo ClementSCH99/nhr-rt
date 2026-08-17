@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import math
+import statistics
 import time
 from typing import Callable
 
@@ -50,6 +51,8 @@ class PhaseBResult:
     initial_measurement: Measurement
     active_status: InstrumentStatus
     active_measurements: tuple[Measurement, ...]
+    expected_current_delta_a: float
+    observed_current_delta_a: float
     final_status: InstrumentStatus
 
 
@@ -337,9 +340,14 @@ class LowSetpointValidator:
                 time.sleep(
                     min(poll_interval_s, max(0.0, deadline - time.monotonic()))
                 )
+            expected_delta, observed_delta = self._validate_current_response(
+                profile, initial, samples
+            )
         finally:
             try:
-                self.instrument.standby()
+                self.instrument.configure_setpoints(
+                    Setpoints(state=OperatingState.STANDBY)
+                )
             finally:
                 self.instrument.disable()
 
@@ -351,8 +359,31 @@ class LowSetpointValidator:
             initial_measurement=initial,
             active_status=active_status,
             active_measurements=tuple(samples),
+            expected_current_delta_a=expected_delta,
+            observed_current_delta_a=observed_delta,
             final_status=final_status,
         )
+
+    @staticmethod
+    def _validate_current_response(
+        profile: PhaseBProfile,
+        initial: Measurement,
+        samples: list[Measurement],
+    ) -> tuple[float, float]:
+        if not samples:
+            raise NHRStateError("No active measurement was collected")
+        sign = 1.0 if profile.mode == OperatingState.CHARGE else -1.0
+        expected = sign * profile.current_a
+        observed = (
+            statistics.fmean(sample.current_a for sample in samples)
+            - initial.current_a
+        )
+        if not math.isclose(expected, observed, rel_tol=0.30, abs_tol=0.10):
+            raise NHRStateError(
+                "Measured current response differs from the low setpoint: "
+                f"expected delta={expected:.3f} A, observed={observed:.3f} A"
+            )
+        return expected, observed
 
     @staticmethod
     def _require_active_status(

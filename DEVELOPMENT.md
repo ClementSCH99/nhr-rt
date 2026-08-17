@@ -112,7 +112,8 @@ runner 3B est maintenant distinct et traite `SetState` comme la frontière
   interlocks et la relecture des limites sont obligatoires.
 - `scripts/session3b_low_setpoint.py` produit un CSV à 10 Hz et un rapport,
   puis tente toujours `standby` et `disable`.
-- Aucun test 3B réel n'a encore été exécuté.
+- La phase 3B réelle a réussi sur `DC PM 1`, module 613, à 0,5 A pendant
+  1 seconde. Le rapport reste local sous `session3b-results/`.
 
 ### 3. Mesures de capacité en Ah
 
@@ -148,7 +149,7 @@ NHR simultanément.
 | Tests automatisés | 38 réussis, 2 matériels ignorés — 2026-08-17 |
 | Revue du diff depuis `03e1b44` | À faire par le propriétaire |
 | Session 3A sur le NHR réel | Réussie sur `DC PM 1`, module 613 |
-| Session 3B sur le NHR réel | Non exécutée et non encore autorisée |
+| Session 3B sur le NHR réel | Réussie à 0,5 A pendant 1 seconde |
 
 Ordre de revue conseillé :
 

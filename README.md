@@ -289,6 +289,10 @@ matériel avant d’avoir adapté et revu le profil pour le banc réel. Le test
 matériel exige en plus l’acquittement distinct
 `NHR9300_SESSION3B_ACK=SUPERVISED_SESSION3B_LOW_SETPOINT_READY`.
 
+Sur le NHR réel, le courant mesuré est positif en charge et négatif en
+décharge. Le runner compare donc le changement de courant par rapport à la
+mesure initiale, avec une tolérance adaptée au premier essai à faible courant.
+
 ## Routines
 
 [cc_hold.example.yaml](examples/cc_hold.example.yaml) montre le schéma YAML v1.

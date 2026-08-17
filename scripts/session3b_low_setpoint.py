@@ -98,10 +98,8 @@ def main() -> int:
         result = LowSetpointValidator(instrument).run(phase_b, limits)
         report["result"] = to_jsonable(result)
         report["passed"] = True
-        return 0
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
-        return 1
     finally:
         try:
             collector.stop()
@@ -109,6 +107,9 @@ def main() -> int:
             report["csv_path"] = (
                 str(collector.csv_path) if collector.csv_path else None
             )
+            if collector.error:
+                report["collector_error"] = collector.error
+                report["passed"] = False
         except Exception as exc:
             report["collector_error"] = f"{type(exc).__name__}: {exc}"
             report["passed"] = False
@@ -134,6 +135,7 @@ def main() -> int:
         )
         print(f"Session 3B report: {report_path.resolve()}")
         print(f"Result: {'PASS' if report['passed'] else 'FAIL'}")
+    return 0 if report["passed"] else 1
 
 
 if __name__ == "__main__":

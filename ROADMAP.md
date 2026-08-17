@@ -61,9 +61,17 @@ relues par les getters IVI et correspondent au profil approuvé. La limite de
 température reste hors validation tant que le profil contient `null`.
 
 État logiciel de la phase B : le runner à faible consigne et ses protections
-sont implémentés sur la branche `feat/session3b-supervised-low-setpoint`. Le
+sont implémentés sur la branche `feat/session3-supervised-safety-validation`. Le
 simulateur reproduit le fait que `SetState` peut activer l’entrée, sans attendre
-un appel distinct à `enable()`. Aucun essai 3B réel n’est encore autorisé.
+un appel distinct à `enable()`. Le passage sur matériel réel est maintenant
+validé avec le profil de banc approuvé.
+
+État matériel au 2026-08-17 : la phase B est validée sur `DC PM 1`, module
+613, avec une décharge de 0,5 A pendant 1 seconde. Le delta de courant observé
+est de -0,572 A pour -0,500 A attendu; la tension est restée entre 89,108 et
+89,113 V. Le nettoyage et une reconnexion indépendante confirment `OFF`,
+`Enabled=False`, consignes à zéro et tous les canaux désactivés. L’acquisition
+a terminé sans erreur à environ 10 Hz, avec 14 overruns sur 19 échantillons.
 
 Terminé lorsque chaque transition connectée est prévisible et revient à
 `standby` puis `disabled`. Une perte de liaison doit être traitée séparément :

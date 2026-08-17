@@ -485,6 +485,9 @@ Session 3A soit vérifiable directement dans le code.
   vérifie tension initiale, limites relues, armement et interlocks, puis traite
   `configure_setpoints()` comme l'activation. Son `finally` force `standby` et
   `disable`, y compris lors d'une erreur avant l'activation.
+- Le signe observé sur le NHR réel est positif en charge et négatif en
+  décharge. Le simulateur suit cette convention et la phase 3B valide le delta
+  de courant mesuré par rapport au point initial.
 
 ## 13. `service.py` — propriétaire local du NHR
 

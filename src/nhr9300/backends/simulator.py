@@ -87,10 +87,10 @@ class SimulatedBackend:
             OperatingState.CHARGE,
             OperatingState.DISCHARGE,
         ):
-            sign = -1.0 if self.setpoints.state == OperatingState.CHARGE else 1.0
+            sign = 1.0 if self.setpoints.state == OperatingState.CHARGE else -1.0
             current = sign * self.setpoints.current
         elapsed = time.monotonic() - self._started
-        voltage = self.initial_voltage_v + (-current * 0.005 * min(elapsed, 10.0))
+        voltage = self.initial_voltage_v + (current * 0.005 * min(elapsed, 10.0))
         power = voltage * current
         return Measurement.now(
             self.instrument_id,
@@ -98,10 +98,10 @@ class SimulatedBackend:
             voltage,
             current,
             power,
-            capacity_charge_ah=max(-current, 0.0) * elapsed / 3_600.0,
-            capacity_discharge_ah=max(current, 0.0) * elapsed / 3_600.0,
-            energy_charge_kwh=max(-power, 0.0) * elapsed / 3_600_000.0,
-            energy_discharge_kwh=max(power, 0.0) * elapsed / 3_600_000.0,
+            capacity_charge_ah=max(current, 0.0) * elapsed / 3_600.0,
+            capacity_discharge_ah=max(-current, 0.0) * elapsed / 3_600.0,
+            energy_charge_kwh=max(power, 0.0) * elapsed / 3_600_000.0,
+            energy_discharge_kwh=max(-power, 0.0) * elapsed / 3_600_000.0,
             temperature_c=25.0 + abs(current) * 0.002,
         )
 
