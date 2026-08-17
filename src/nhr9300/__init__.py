@@ -11,6 +11,7 @@ from .types import (
     Measurement,
     OperatingState,
     SafetyLimits,
+    SafetyLimitsReadback,
     Setpoints,
 )
 
@@ -24,6 +25,7 @@ __all__ = [
     "NHRServiceClient",
     "OperatingState",
     "SafetyLimits",
+    "SafetyLimitsReadback",
     "Setpoints",
     "SimulatedBackend",
     "StaticInterlockProvider",

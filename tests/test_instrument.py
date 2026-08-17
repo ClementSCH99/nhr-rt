@@ -88,14 +88,17 @@ def test_enable_requires_limits_arm_and_fresh_measurement() -> None:
         with pytest.raises(NHRNotArmedError):
             instrument.configure_setpoints(setpoints)
         instrument.arm()
-        instrument.configure_setpoints(setpoints)
         with pytest.raises(Exception, match="fresh measurement"):
-            instrument.enable()
+            instrument.configure_setpoints(setpoints)
         instrument.read_measurement()
+        instrument.configure_setpoints(setpoints)
+        assert backend.enabled
+        assert instrument.may_be_energized
         instrument.enable()
         assert backend.enabled
         instrument.disable()
         assert not backend.enabled
+        assert not instrument.may_be_energized
 
 
 def test_rejects_setpoints_above_approved_limits() -> None:

@@ -24,6 +24,7 @@ from .types import (
     Measurement,
     OperatingState,
     SafetyLimits,
+    SafetyLimitsReadback,
     Setpoints,
 )
 
@@ -208,6 +209,10 @@ class NHR9300:
         self._limits = limits
         self._armed_until = None
 
+    def read_safety_limits(self) -> SafetyLimitsReadback:
+        self._require_connected()
+        return self._call(self._backend.read_safety_limits)
+
     def _validate_setpoints(self, setpoints: Setpoints) -> None:
         if self._limits is None:
             raise NHRValidationError("Configure approved safety limits first")
@@ -235,9 +240,17 @@ class NHR9300:
     def configure_setpoints(self, setpoints: Setpoints) -> None:
         self._require_connected()
         self._validate_setpoints(setpoints)
-        if setpoints.state in (OperatingState.CHARGE, OperatingState.DISCHARGE):
+        active_state = setpoints.state in (
+            OperatingState.CHARGE,
+            OperatingState.DISCHARGE,
+            OperatingState.BATTERY_EMULATION,
+        )
+        if active_state:
             self._require_arm()
+            self._require_fresh_measurement()
         self._call(self._backend.configure_setpoints, setpoints)
+        status = self.read_status()
+        self._may_be_energized = status.enabled and active_state
 
     def arm(self, duration_s: float = 30.0) -> float:
         self._require_connected()
@@ -279,10 +292,7 @@ class NHR9300:
     def enable(self) -> None:
         self._require_connected()
         self._require_arm()
-        if self._last_measurement is None:
-            raise NHRStateError("A fresh measurement is required before enabling")
-        if time.monotonic() - self._last_measurement.monotonic_s > self._measurement_max_age_s:
-            raise NHRStateError("The latest measurement is stale")
+        self._require_fresh_measurement()
         self._call(self._backend.set_enabled, True)
         status = self.read_status()
         self._may_be_energized = status.state in (
@@ -290,6 +300,14 @@ class NHR9300:
             OperatingState.DISCHARGE,
             OperatingState.BATTERY_EMULATION,
         )
+
+    def _require_fresh_measurement(self) -> None:
+        if self._last_measurement is None:
+            raise NHRStateError(
+                "A fresh measurement is required before an active state"
+            )
+        if time.monotonic() - self._last_measurement.monotonic_s > self._measurement_max_age_s:
+            raise NHRStateError("The latest measurement is stale")
 
     def standby(self) -> None:
         self._require_connected()

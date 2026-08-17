@@ -19,3 +19,6 @@ dist/
 build/
 runs/
 session2-results/
+session3-results/
+session3b-results/
+examples/session3_bench.local.json

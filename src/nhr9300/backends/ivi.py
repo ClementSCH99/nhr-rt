@@ -14,6 +14,7 @@ from ..types import (
     Measurement,
     OperatingState,
     SafetyLimits,
+    SafetyLimitsReadback,
     Setpoints,
 )
 
@@ -168,6 +169,12 @@ class IVIBackend:
                 voltage,
                 current,
                 power,
+                capacity_charge_ah=optional(
+                    module.NHRDCPowerModuleMeasureAmpHourCharge
+                ),
+                capacity_discharge_ah=optional(
+                    module.NHRDCPowerModuleMeasureAmpHourDischarge
+                ),
                 energy_charge_kwh=optional(
                     module.NHRDCPowerModuleMeasureKiloWattHourCharge
                 ),
@@ -202,6 +209,32 @@ class IVIBackend:
                 safety.SetUutTemperatureLimits(limits.uut_temperature_max)
 
         self._wrap("configure safety limits", write)
+
+    def read_safety_limits(self) -> SafetyLimitsReadback:
+        def read() -> SafetyLimitsReadback:
+            safety = self.driver.Input.SafetyLimits
+            charge = tuple(float(value) for value in safety.GetChargeLimits())
+            discharge = tuple(
+                float(value) for value in safety.GetDischargeLimits()
+            )
+            temperature = float(safety.GetUutTemperatureLimits())
+            return SafetyLimitsReadback(
+                charge_current=charge[0],
+                charge_current_delay_s=charge[1],
+                charge_voltage_max=charge[2],
+                charge_voltage_delay_s=charge[3],
+                charge_power=charge[4],
+                charge_power_delay_s=charge[5],
+                discharge_current=discharge[0],
+                discharge_current_delay_s=discharge[1],
+                discharge_voltage_min=discharge[2],
+                discharge_voltage_delay_s=discharge[3],
+                discharge_power=discharge[4],
+                discharge_power_delay_s=discharge[5],
+                uut_temperature_max=temperature,
+            )
+
+        return self._wrap("read safety limits", read)
 
     def configure_setpoints(self, setpoints: Setpoints) -> None:
         def write() -> None:

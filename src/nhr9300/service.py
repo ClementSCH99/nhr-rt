@@ -7,6 +7,7 @@ import json
 import logging
 import queue
 import threading
+
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,6 +25,12 @@ from .routines import RoutineRunner, routine_from_mapping
 from .types import OperatingState, SafetyLimits, Setpoints, to_jsonable
 
 LOGGER = logging.getLogger(__name__)
+
+
+class LocalThreadingHTTPServer(ThreadingHTTPServer):
+    """Local server that refuses to share its port with another NHR service."""
+
+    allow_reuse_address = False
 
 
 @dataclass(slots=True)
@@ -341,7 +348,7 @@ def build_server(
         raise NHRValidationError("The v1 service may bind to localhost only")
     manager = InstrumentManager(config, config_path=config_path)
     handler = type("ConfiguredNHRHandler", (NHRRequestHandler,), {"manager": manager})
-    server = ThreadingHTTPServer((host, port), handler)
+    server = LocalThreadingHTTPServer((host, port), handler)
     bound_host, bound_port = server.server_address[:2]
     manager.listen_url = f"http://{bound_host}:{bound_port}"
     if announce:

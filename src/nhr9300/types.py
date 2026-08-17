@@ -64,6 +64,25 @@ class SafetyLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class SafetyLimitsReadback:
+    """Safety limits as they are read back from the NHR hardware."""
+
+    charge_current: float
+    charge_current_delay_s: float
+    charge_voltage_max: float
+    charge_voltage_delay_s: float
+    charge_power: float
+    charge_power_delay_s: float
+    discharge_current: float
+    discharge_current_delay_s: float
+    discharge_voltage_min: float
+    discharge_voltage_delay_s: float
+    discharge_power: float
+    discharge_power_delay_s: float
+    uut_temperature_max: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Setpoints:
     state: OperatingState = OperatingState.STANDBY
     voltage: float = 0.0
@@ -100,6 +119,8 @@ class Measurement:
     voltage_v: float
     current_a: float
     power_w: float
+    capacity_charge_ah: float | None = None
+    capacity_discharge_ah: float | None = None
     energy_charge_kwh: float | None = None
     energy_discharge_kwh: float | None = None
     temperature_c: float | None = None

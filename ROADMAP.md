@@ -4,9 +4,9 @@
 
 La v1 logicielle est fonctionnelle en simulation : classe typée, sécurité,
 acquisition CSV, routines Python/YAML, service local et client 64 bits.
-La suite automatisée compte 11 tests réussis; les 2 tests matériels sont
-désactivés par défaut. Les écritures IVI n’ont pas encore été validées sur le
-cycler réel.
+La suite automatisée couvre la simulation, le service et le client; les tests
+matériels sont désactivés par défaut. Les écritures IVI n’ont pas encore été
+validées sur le cycler réel.
 
 ## Session 2 — Valider la lecture réelle
 
@@ -38,14 +38,37 @@ de fermer complètement la session 2.
 Objectif : vérifier chaque écriture séparément sur un banc supervisé, sans
 encore exécuter une routine complète.
 
-- Documenter la batterie, les limites approuvées et la procédure d’arrêt.
-- Tester `disable`, `standby`, les limites et les faibles consignes.
-- Confirmer le comportement réel de `SetState`, `Enabled` et `Close`.
-- Caractériser le watchdog avant de l’activer par défaut.
+- Phase A : tester `disable`, les limites, `SetState(STANDBY)` avec tous les
+  canaux désactivés, un `disable` final, puis `Close` et la reconnexion. Cette
+  phase n’appelle jamais directement `enable`.
+- Phase B : tester une faible consigne et `Enabled` avec un profil de banc
+  approuvé et un opérateur présent.
+- Phase C : caractériser séparément les erreurs de communication et le
+  watchdog avant de l’activer par défaut.
 - Ajouter des tests de régression pour chaque comportement observé.
 
-Terminé lorsque chaque transition est prévisible et revient à `standby` puis
-`disabled`, y compris après une erreur volontaire ou une perte de liaison.
+Le runner `scripts/session3_safety.py` implémente la phase A. Il exige un profil
+JSON approuvé et un acquittement opérateur distinct, journalise chaque état
+avant/après et refuse de commencer si le module est déjà actif.
+
+État au 2026-08-17 : la phase A est validée sur `DC PM 1` (module 613).
+Le NHR réel passe de `OFF`/`Enabled=False` à
+`STANDBY`/`Enabled=True` lors de `SetState(STANDBY)`, même avec tous les canaux
+désactivés. Le `disable` final le ramène à `OFF`/`Enabled=False`; fermeture,
+reconnexion et lecture indépendante confirment cet état sûr.
+Les limites 1 A, 100 W et 75–100 V, ainsi que leurs délais de 0,1 s, ont été
+relues par les getters IVI et correspondent au profil approuvé. La limite de
+température reste hors validation tant que le profil contient `null`.
+
+État logiciel de la phase B : le runner à faible consigne et ses protections
+sont implémentés sur la branche `feat/session3b-supervised-low-setpoint`. Le
+simulateur reproduit le fait que `SetState` peut activer l’entrée, sans attendre
+un appel distinct à `enable()`. Aucun essai 3B réel n’est encore autorisé.
+
+Terminé lorsque chaque transition connectée est prévisible et revient à
+`standby` puis `disabled`. Une perte de liaison doit être traitée séparément :
+après la coupure, le logiciel ne peut plus envoyer ces commandes et dépend du
+comportement réel du watchdog.
 
 ## Session 4 — Premier palier CC réel
 

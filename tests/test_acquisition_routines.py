@@ -122,6 +122,10 @@ def test_acquisition_reports_csv_and_timing_quality(tmp_path) -> None:
     assert statistics.effective_rate_hz > 0
     assert statistics.mean_interval_s is not None
     assert statistics.max_interval_s is not None
+    assert "capacity_charge_ah" in rows[0]
+    assert "capacity_discharge_ah" in rows[0]
+    assert rows[0]["capacity_charge_ah"] != ""
+    assert rows[0]["capacity_discharge_ah"] != ""
 
 
 def test_simulated_acquisition_supports_1_5_and_10_hz(tmp_path) -> None:

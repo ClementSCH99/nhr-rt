@@ -68,6 +68,8 @@ for measurement in client.stream(instrument_id):
     voltage_v = measurement["voltage_v"]
     current_a = measurement["current_a"]
     power_w = measurement["power_w"]
+    capacity_charge_ah = measurement["capacity_charge_ah"]
+    capacity_discharge_ah = measurement["capacity_discharge_ah"]
 
     # Transmettre ici la mesure à la queue ou à l'agrégateur de can-py.
 ```

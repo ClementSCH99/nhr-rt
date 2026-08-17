@@ -7,6 +7,7 @@ import queue
 import statistics
 import threading
 import time
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +63,8 @@ class AcquisitionCollector:
         "voltage_v",
         "current_a",
         "power_w",
+        "capacity_charge_ah",
+        "capacity_discharge_ah",
         "energy_charge_kwh",
         "energy_discharge_kwh",
         "temperature_c",
@@ -83,6 +86,7 @@ class AcquisitionCollector:
             raise NHRValidationError("Acquisition rate must be between 1 and 10 Hz")
         if status_refresh_interval_s <= 0:
             raise NHRValidationError("Status refresh interval must be positive")
+
         self.instrument = instrument
         self.rate_hz = rate_hz
         self._csv_template = Path(csv_path) if csv_path else None
@@ -274,6 +278,8 @@ class AcquisitionCollector:
             "voltage_v": measurement.voltage_v,
             "current_a": measurement.current_a,
             "power_w": measurement.power_w,
+            "capacity_charge_ah": measurement.capacity_charge_ah,
+            "capacity_discharge_ah": measurement.capacity_discharge_ah,
             "energy_charge_kwh": measurement.energy_charge_kwh,
             "energy_discharge_kwh": measurement.energy_discharge_kwh,
             "temperature_c": measurement.temperature_c,

@@ -6,6 +6,7 @@ from pathlib import Path
 import logging
 
 import nhr9300.service as service_module
+import pytest
 from nhr9300.client import NHRServiceClient
 from nhr9300.service import build_server
 
@@ -73,6 +74,21 @@ def test_startup_summary_and_effective_configuration(tmp_path, capsys) -> None:
         assert instrument["csv_path"] in output
         assert configuration["listen_url"] in output
         assert configuration["restart_required_for_config_changes"] is True
+    finally:
+        manager.close()
+        server.server_close()
+
+
+def test_service_refuses_to_share_an_existing_port(tmp_path) -> None:
+    config = {
+        "output_dir": str(tmp_path),
+        "instruments": [{"id": "sim-exclusive", "backend": "simulator"}],
+    }
+    server, manager = build_server(config, port=0, announce=False)
+    host, port = server.server_address
+    try:
+        with pytest.raises(OSError):
+            build_server(config, host=host, port=port, announce=False)
     finally:
         manager.close()
         server.server_close()

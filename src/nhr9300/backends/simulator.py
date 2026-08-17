@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from ..errors import NHRConnectionError
+from ..errors import NHRConnectionError, NHRStateError
 from ..types import (
     Capabilities,
     Identity,
@@ -12,6 +12,7 @@ from ..types import (
     Measurement,
     OperatingState,
     SafetyLimits,
+    SafetyLimitsReadback,
     Setpoints,
 )
 
@@ -97,6 +98,8 @@ class SimulatedBackend:
             voltage,
             current,
             power,
+            capacity_charge_ah=max(-current, 0.0) * elapsed / 3_600.0,
+            capacity_discharge_ah=max(current, 0.0) * elapsed / 3_600.0,
             energy_charge_kwh=max(-power, 0.0) * elapsed / 3_600_000.0,
             energy_discharge_kwh=max(power, 0.0) * elapsed / 3_600_000.0,
             temperature_c=25.0 + abs(current) * 0.002,
@@ -106,9 +109,32 @@ class SimulatedBackend:
         self._check()
         self.limits = limits
 
+    def read_safety_limits(self) -> SafetyLimitsReadback:
+        self._check()
+        if self.limits is None:
+            raise NHRStateError("Safety limits have not been configured")
+        limits = self.limits
+        return SafetyLimitsReadback(
+            charge_current=limits.charge_current,
+            charge_current_delay_s=limits.current_delay_s,
+            charge_voltage_max=limits.charge_voltage_max,
+            charge_voltage_delay_s=limits.voltage_delay_s,
+            charge_power=limits.charge_power,
+            charge_power_delay_s=limits.power_delay_s,
+            discharge_current=limits.discharge_current,
+            discharge_current_delay_s=limits.current_delay_s,
+            discharge_voltage_min=limits.discharge_voltage_min,
+            discharge_voltage_delay_s=limits.voltage_delay_s,
+            discharge_power=limits.discharge_power,
+            discharge_power_delay_s=limits.power_delay_s,
+            uut_temperature_max=limits.uut_temperature_max,
+        )
+
     def configure_setpoints(self, setpoints: Setpoints) -> None:
         self._check()
         self.setpoints = setpoints
+        # Real NHR hardware enables its input when SetState selects a mode.
+        self.enabled = setpoints.state != OperatingState.OFF
 
     def set_enabled(self, enabled: bool) -> None:
         self._check()
@@ -116,6 +142,7 @@ class SimulatedBackend:
 
     def set_state(self, state: OperatingState) -> None:
         self._check()
+        self.enabled = state != OperatingState.OFF
         self.setpoints = Setpoints(
             state=state,
             voltage=self.setpoints.voltage,

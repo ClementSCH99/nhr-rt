@@ -4,6 +4,11 @@ Librairie Python typée, moteur de routines et service local pour les cyclers
 NH Research NHR9300. Le backend réel utilise le driver officiel IVI-COM; un
 simulateur permet de développer et valider les routines sans équipement.
 
+Pour comprendre l'architecture, la répartition des responsabilités et les
+modifications depuis la dernière phase validée, commencer par
+[DEVELOPMENT.md](DEVELOPMENT.md). Pour approfondir chaque module et la logique
+de ses fonctions, consulter [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md).
+
 ## État de la v1
 
 - Sessions indépendantes, chacune confinée à son propre thread COM.
@@ -218,6 +223,71 @@ Une session est acceptée seulement si :
 Dans [service.hardware.example.json](examples/service.hardware.example.json),
 `operator_supervised` est volontairement `false`; l’armement est donc refusé
 tant qu’un intégrateur n’a pas fourni un interlock adapté.
+
+## Session 3A : commandes de sécurité isolées
+
+Cette première partie valide uniquement des écritures qui ne doivent pas faire
+circuler d’énergie :
+
+```text
+état initial sûr
+    → disable
+    → limites approuvées
+    → SetState(STANDBY), canaux désactivés
+    → disable final
+    → Close
+    → reconnexion et vérification
+```
+
+Le runner refuse de commencer si le module est déjà activé ou dans un mode de
+charge/décharge. Sur le NHR réel, `SetState(STANDBY)` peut afficher
+temporairement `Enabled=True`; cette transition est acceptée uniquement si
+tous les canaux sont désactivés, puis un `disable` explicite ramène le module
+à `OFF` et `Enabled=False`. Le runner n’appelle ni `arm()`, ni le watchdog.
+
+Copier [session3_bench.example.json](examples/session3_bench.example.json) vers
+un fichier local non versionné, décrire le banc et faire approuver les limites.
+L’exemple fourni porte `approved: false` et ne peut donc pas être utilisé tel
+quel.
+
+Une fois le banc revu par l’opérateur :
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path .\src).Path
+$env:NHR9300_RESOURCE = "DC PM 1"
+$env:NHR9300_SESSION3_ACK = "SUPERVISED_SESSION3_WRITES_READY"
+.\.venv32\Scripts\python.exe .\scripts\session3_safety.py `
+  --bench-profile .\chemin\profil-session3.json
+```
+
+Chaque exécution crée un dossier horodaté et un `report.json`. Les faibles
+consignes, `Enabled` et le watchdog seront ajoutés dans des phases distinctes
+après validation de cette première séquence.
+
+Le rapport compare aussi les limites demandées avec `GetChargeLimits` et
+`GetDischargeLimits`. Un écart fait échouer la session. La température est
+exclue de cette comparaison lorsque `uut_temperature_max` vaut `null`.
+
+## Session 3B : première transition à faible consigne
+
+La phase 3B traite `SetState(CHARGE/DISCHARGE)` comme la frontière qui peut
+commencer à faire circuler de l’énergie. Elle ne suppose donc pas qu’un appel
+ultérieur à `enable()` est nécessaire.
+
+Le runner `scripts/session3b_low_setpoint.py` impose :
+
+- une approbation `phase_b` distincte de celle des limites;
+- au maximum 1 A, 100 W et 2 secondes;
+- une mesure fraîche dans la fenêtre de tension approuvée;
+- un armement de 1 à 30 secondes et des interlocks valides;
+- la relecture des limites avant la transition;
+- une acquisition CSV à 10 Hz;
+- `standby`, puis `disable`, même après une erreur.
+
+L’exemple porte `phase_b.approved: false`. Ne pas lancer cette phase sur le
+matériel avant d’avoir adapté et revu le profil pour le banc réel. Le test
+matériel exige en plus l’acquittement distinct
+`NHR9300_SESSION3B_ACK=SUPERVISED_SESSION3B_LOW_SETPOINT_READY`.
 
 ## Routines
 
