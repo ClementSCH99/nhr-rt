@@ -462,7 +462,7 @@ contrôles locaux avant les écritures.
 - **`load_yaml(path)`** importe PyYAML seulement au besoin, charge avec
   `safe_load`, puis réutilise exactement la validation du mapping.
 
-## 12. `safety_validation.py` — Sessions 3A et 3B isolées
+## 12. `safety_validation.py` — Sessions 3A, 3B et 3C isolées
 
 - **`PrimitiveResult`** conserve état avant/après et heures d'une seule écriture.
 - **`require_safe_start(status)`** refuse un module Enabled ou déjà en mode
@@ -488,6 +488,12 @@ Session 3A soit vérifiable directement dans le code.
 - Le signe observé sur le NHR réel est positif en charge et négatif en
   décharge. Le simulateur suit cette convention et la phase 3B valide le delta
   de courant mesuré par rapport au point initial.
+- **`PhaseCProfile`** ajoute une courte durée de communication fermée; elle ne
+  configure pas un délai matériel, car l'API IVI n'en expose pas.
+- **`WatchdogLossValidator`** relit le watchdog activé, confirme la réponse à
+  la faible consigne, ferme la session, vérifie l'erreur locale attendue, puis
+  se reconnecte et exige une sortie inactive. Son nettoyage remet consignes,
+  sortie et watchdog dans leur état sûr.
 
 ## 13. `service.py` — propriétaire local du NHR
 
@@ -626,6 +632,14 @@ Le profil approuvé et l'acquittement d'environnement remplissent deux rôles
 différents : données de banc revues d'un côté, confirmation opérateur au moment
 de l'exécution de l'autre.
 
+### `scripts/session3c_watchdog_loss.py`
+
+- **`load_phase_c()`** charge l'approbation et les paramètres propres à 3C.
+- **`main()`** exige l'acquittement 3C, écrit toujours un rapport horodaté et
+  effectue une dernière tentative de nettoyage après succès ou erreur.
+- L'absence d'acquisition continue pendant la coupure est volontaire : aucune
+  donnée ne peut être obtenue par la liaison que le test vient de fermer.
+
 ## 17. Comment les tests prouvent ces intentions
 
 | Fichier | Responsabilité couverte |
@@ -633,7 +647,7 @@ de l'exécution de l'autre.
 | `tests/test_instrument.py` | limites, armement, fraîcheur, interlocks et enable |
 | `tests/test_acquisition_routines.py` | cadence, CSV, routines, arrêts et interlocks runtime |
 | `tests/test_service.py` | API 32/64 bits, SSE, erreurs, port exclusif et shutdown |
-| `tests/test_safety_validation.py` | Session 3A et protections simulées de la Session 3B |
+| `tests/test_safety_validation.py` | Sessions 3A, 3B et réponse watchdog simulée de 3C |
 | `tests/test_public_api.py` | exports publics attendus |
 | `tests/hardware/test_readonly.py` | lectures réelles, opt-in explicite |
 | `tests/hardware/test_energizing.py` | palier réel, avec barrières opérateur supplémentaires |

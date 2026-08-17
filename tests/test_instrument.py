@@ -136,3 +136,15 @@ def test_arm_expiry_is_enforced() -> None:
         time.sleep(1.05)
         with pytest.raises(NHRNotArmedError):
             instrument.enable()
+
+
+def test_watchdog_write_is_verified_by_readback() -> None:
+    instrument, backend = make_instrument()
+    with instrument:
+        assert instrument.read_watchdog() is False
+        instrument.set_watchdog(True)
+        assert instrument.read_watchdog() is True
+        instrument.set_watchdog(False)
+        assert instrument.read_watchdog() is False
+
+    assert backend.watchdog_enabled is False

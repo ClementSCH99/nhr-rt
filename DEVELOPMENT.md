@@ -115,7 +115,17 @@ runner 3B est maintenant distinct et traite `SetState` comme la frontière
 - La phase 3B réelle a réussi sur `DC PM 1`, module 613, à 0,5 A pendant
   1 seconde. Le rapport reste local sous `session3b-results/`.
 
-### 3. Mesures de capacité en Ah
+### 3. Validation logicielle de la Session 3C
+
+- `read_watchdog()` relit la valeur IVI au lieu de supposer que l'écriture a
+  réussi.
+- `WatchdogLossValidator` vérifie la faible consigne avant de fermer la
+  communication, puis exige un état désactivé après reconnexion.
+- Le nettoyage remet les consignes à zéro, désactive la sortie et le watchdog.
+- Le simulateur couvre un watchdog qui déclenche et un watchdog trop lent qui
+  laisse la sortie active. Aucun essai 3C réel n'a encore été exécuté.
+
+### 4. Mesures de capacité en Ah
 
 - `Measurement` expose `capacity_charge_ah` et `capacity_discharge_ah`.
 - Les backends IVI et simulateur remplissent ces deux valeurs.
@@ -125,7 +135,7 @@ runner 3B est maintenant distinct et traite `SetState` comme la frontière
 Un ancien CSV ne peut pas recevoir ces colonnes après coup : il faut redémarrer
 le service et commencer une nouvelle acquisition.
 
-### 4. Propriété exclusive du port du service
+### 5. Propriété exclusive du port du service
 
 - Le serveur HTTP refuse maintenant de partager son port avec une autre instance.
 - Un test vérifie qu'un deuxième service ne peut pas écouter la même adresse.
@@ -133,7 +143,7 @@ le service et commencer une nouvelle acquisition.
 Cela évite qu'un ancien processus et un nouveau service semblent piloter le même
 NHR simultanément.
 
-### 5. Documentation associée
+### 6. Documentation associée
 
 - `README.md` explique la Session 3A et les nouvelles mesures.
 - `ROADMAP.md` distingue les phases A, B et C de la Session 3.
@@ -146,10 +156,11 @@ NHR simultanément.
 
 | Contrôle | État |
 |---|---|
-| Tests automatisés | 38 réussis, 2 matériels ignorés — 2026-08-17 |
+| Tests automatisés | 43 réussis, 2 matériels ignorés — 2026-08-17 |
 | Revue du diff depuis `03e1b44` | À faire par le propriétaire |
 | Session 3A sur le NHR réel | Réussie sur `DC PM 1`, module 613 |
 | Session 3B sur le NHR réel | Réussie à 0,5 A pendant 1 seconde |
+| Session 3C sur le NHR réel | Non exécutée; profil et supervision requis |
 
 Ordre de revue conseillé :
 

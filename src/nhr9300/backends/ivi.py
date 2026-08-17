@@ -289,3 +289,9 @@ class IVIBackend:
             "set watchdog",
             lambda: setattr(self.driver.Input.SafetyLimits, "Watchdog", enabled),
         )
+
+    def read_watchdog(self) -> bool:
+        return self._wrap(
+            "read watchdog",
+            lambda: bool(self.driver.Input.SafetyLimits.Watchdog),
+        )

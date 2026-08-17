@@ -261,8 +261,8 @@ $env:NHR9300_SESSION3_ACK = "SUPERVISED_SESSION3_WRITES_READY"
 ```
 
 Chaque exécution crée un dossier horodaté et un `report.json`. Les faibles
-consignes, `Enabled` et le watchdog seront ajoutés dans des phases distinctes
-après validation de cette première séquence.
+consignes et le watchdog restent testés dans des phases distinctes afin de
+conserver une frontière de sécurité claire.
 
 Le rapport compare aussi les limites demandées avec `GetChargeLimits` et
 `GetDischargeLimits`. Un écart fait échouer la session. La température est
@@ -292,6 +292,27 @@ matériel exige en plus l’acquittement distinct
 Sur le NHR réel, le courant mesuré est positif en charge et négatif en
 décharge. Le runner compare donc le changement de courant par rapport à la
 mesure initiale, avec une tolérance adaptée au premier essai à faible courant.
+
+## Session 3C : watchdog et perte de communication
+
+La phase 3C vérifie le cas où le logiciel ne peut plus envoyer sa commande de
+nettoyage. Elle active explicitement le watchdog, applique une faible consigne,
+ferme la communication pendant une durée bornée, puis se reconnecte. Le test
+réussit seulement si le module est alors désactivé et dans `OFF` ou `STANDBY`.
+
+Le profil `phase_c` impose les mêmes plafonds électriques que 3B, une coupure
+de 0,25 à 10 secondes et une approbation séparée. Le rapport contient les
+limites relues, la réponse du courant, l'erreur de communication attendue et
+les états observés après reconnexion et après nettoyage.
+
+Cet essai peut faire circuler de l'énergie. Ne pas le lancer simplement parce
+que les tests simulés réussissent. Il exige une revue du profil, un opérateur
+présent et l'acquittement distinct
+`NHR9300_SESSION3C_ACK=SUPERVISED_SESSION3C_WATCHDOG_LOSS_READY`.
+
+Le pilote IVI expose l'activation du watchdog, mais aucun délai configurable.
+`disconnect_duration_s` est donc une fenêtre d'observation du test, pas un
+réglage envoyé au NHR.
 
 ## Routines
 

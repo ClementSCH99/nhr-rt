@@ -18,7 +18,9 @@ from nhr9300.types import InterlockSignal
 from nhr9300.safety_validation import (
     LowSetpointValidator,
     PhaseBProfile,
+    PhaseCProfile,
     SafetyPrimitiveValidator,
+    WatchdogLossValidator,
     require_disabled_inactive,
     safety_limit_mismatches,
 )
@@ -258,3 +260,86 @@ def test_phase_b_voltage_precheck_cleans_up_and_clears_arm() -> None:
 
     assert final_status.enabled is False
     assert final_status.armed_until_monotonic is None
+
+
+def phase_c_profile(**changes: object) -> PhaseCProfile:
+    values = {
+        "mode": OperatingState.DISCHARGE,
+        "current_a": 0.5,
+        "voltage_v": 300.0,
+        "power_w": 100.0,
+        "pre_disconnect_duration_s": 0.05,
+        "disconnect_duration_s": 0.25,
+        "arm_duration_s": 5.0,
+        "approved": True,
+        "profile_name": "session3c-test",
+    }
+    values.update(changes)
+    return PhaseCProfile(**values)
+
+
+def test_phase_c_observes_watchdog_trip_and_restores_safe_state() -> None:
+    backend = SimulatedBackend(
+        "sim", initial_voltage_v=350.0, watchdog_timeout_s=0.05
+    )
+    instrument = NHR9300(
+        "sim", backend, interlocks=[StaticInterlockProvider(safe=True)]
+    )
+
+    with instrument:
+        result = WatchdogLossValidator(instrument).run(
+            phase_c_profile(), approved_limits()
+        )
+
+    assert result.watchdog_before is False
+    assert result.watchdog_enabled_readback is True
+    assert result.active_status.enabled is True
+    assert result.communication_error.startswith("NHRConnectionError:")
+    assert result.status_after_reconnect.enabled is False
+    assert result.status_after_reconnect.state == OperatingState.STANDBY
+    assert result.watchdog_disabled_readback is False
+    assert result.final_status.enabled is False
+    assert backend.watchdog_enabled is False
+
+
+def test_phase_c_fails_if_output_is_still_active_after_reconnect() -> None:
+    backend = SimulatedBackend(
+        "sim", initial_voltage_v=350.0, watchdog_timeout_s=60.0
+    )
+    instrument = NHR9300(
+        "sim", backend, interlocks=[StaticInterlockProvider(safe=True)]
+    )
+
+    with instrument:
+        with pytest.raises(NHRStateError, match="Expected OFF or STANDBY"):
+            WatchdogLossValidator(instrument).run(
+                phase_c_profile(), approved_limits()
+            )
+        final_status = instrument.read_status()
+
+    assert final_status.enabled is False
+    assert final_status.setpoints.current_enabled is False
+    assert backend.watchdog_enabled is False
+
+
+def test_phase_c_rejects_long_communication_gap() -> None:
+    with pytest.raises(NHRValidationError, match="between 0.25 and 10 s"):
+        WatchdogLossValidator.validate_profile(
+            phase_c_profile(disconnect_duration_s=10.1), approved_limits()
+        )
+
+
+def test_phase_c_does_not_disable_a_preexisting_watchdog() -> None:
+    backend = SimulatedBackend("sim", initial_voltage_v=350.0)
+    backend.watchdog_enabled = True
+    instrument = NHR9300(
+        "sim", backend, interlocks=[StaticInterlockProvider(safe=True)]
+    )
+
+    with instrument:
+        with pytest.raises(NHRStateError, match="disabled initially"):
+            WatchdogLossValidator(instrument).run(
+                phase_c_profile(), approved_limits()
+            )
+
+    assert backend.watchdog_enabled is True

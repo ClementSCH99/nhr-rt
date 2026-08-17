@@ -24,12 +24,14 @@ class SimulatedBackend:
         *,
         initial_voltage_v: float = 350.0,
         capabilities: Capabilities | None = None,
+        watchdog_timeout_s: float = 0.25,
     ) -> None:
         self.instrument_id = instrument_id
         self.connected = False
         self.enabled = False
         self.remote = True
         self.watchdog_enabled = False
+        self.watchdog_timeout_s = watchdog_timeout_s
         self.initial_voltage_v = initial_voltage_v
         self.capabilities = capabilities or Capabilities(
             voltage_min=0.0,
@@ -47,6 +49,7 @@ class SimulatedBackend:
         self.setpoints = Setpoints()
         self.failure: Exception | None = None
         self._started = time.monotonic()
+        self._disconnected_at: float | None = None
 
     def _check(self) -> None:
         if self.failure is not None:
@@ -55,10 +58,19 @@ class SimulatedBackend:
             raise NHRConnectionError(f"{self.instrument_id} is not connected")
 
     def connect(self) -> None:
+        if (
+            self.watchdog_enabled
+            and self._disconnected_at is not None
+            and time.monotonic() - self._disconnected_at >= self.watchdog_timeout_s
+        ):
+            self.enabled = False
+            self.setpoints = Setpoints(state=OperatingState.STANDBY)
         self.connected = True
+        self._disconnected_at = None
         self._started = time.monotonic()
 
     def close(self) -> None:
+        self._disconnected_at = time.monotonic()
         self.connected = False
 
     def read_identity(self) -> Identity:
@@ -162,3 +174,7 @@ class SimulatedBackend:
     def set_watchdog(self, enabled: bool) -> None:
         self._check()
         self.watchdog_enabled = enabled
+
+    def read_watchdog(self) -> bool:
+        self._check()
+        return self.watchdog_enabled

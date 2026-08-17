@@ -345,3 +345,8 @@ class NHR9300:
         """Explicit opt-in only; validate watchdog behavior on the bench first."""
         self._require_connected()
         self._call(self._backend.set_watchdog, enabled)
+
+    def read_watchdog(self) -> bool:
+        """Read the hardware value instead of trusting the last requested value."""
+        self._require_connected()
+        return self._call(self._backend.read_watchdog)

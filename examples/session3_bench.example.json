@@ -24,5 +24,16 @@
     "arm_duration_s": 10.0,
     "approved": false,
     "profile_name": "REPLACE_WITH_REVIEWED_SESSION3B_PROFILE"
+  },
+  "phase_c": {
+    "mode": "discharge",
+    "current_a": 0.5,
+    "voltage_v": 300.0,
+    "power_w": 100.0,
+    "pre_disconnect_duration_s": 0.5,
+    "disconnect_duration_s": 1.0,
+    "arm_duration_s": 10.0,
+    "approved": false,
+    "profile_name": "REPLACE_WITH_REVIEWED_SESSION3C_PROFILE"
   }
 }

@@ -9,7 +9,7 @@ import statistics
 import time
 from typing import Callable
 
-from .errors import NHRStateError, NHRValidationError
+from .errors import NHRConnectionError, NHRStateError, NHRValidationError
 from .instrument import NHR9300
 from .types import (
     InstrumentStatus,
@@ -53,6 +53,41 @@ class PhaseBResult:
     active_measurements: tuple[Measurement, ...]
     expected_current_delta_a: float
     observed_current_delta_a: float
+    final_status: InstrumentStatus
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseCProfile:
+    """Profile for one supervised watchdog communication-loss test."""
+
+    mode: OperatingState
+    current_a: float
+    voltage_v: float
+    power_w: float
+    pre_disconnect_duration_s: float
+    disconnect_duration_s: float
+    arm_duration_s: float
+    approved: bool
+    profile_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseCResult:
+    initial_status: InstrumentStatus
+    initial_measurement: Measurement
+    safety_limits_readback: SafetyLimitsReadback
+    watchdog_before: bool
+    watchdog_enabled_readback: bool
+    active_status: InstrumentStatus
+    active_measurements: tuple[Measurement, ...]
+    expected_current_delta_a: float
+    observed_current_delta_a: float
+    communication_error: str
+    disconnected_at_utc: datetime
+    reconnected_at_utc: datetime
+    status_after_reconnect: InstrumentStatus
+    watchdog_after_reconnect: bool
+    watchdog_disabled_readback: bool
     final_status: InstrumentStatus
 
 
@@ -240,29 +275,39 @@ class LowSetpointValidator:
     def validate_profile(
         profile: PhaseBProfile,
         limits: SafetyLimits,
+        *,
+        phase_name: str = "Phase 3B",
     ) -> None:
         if not profile.approved or not profile.profile_name.strip():
             raise NHRValidationError(
-                "Phase 3B requires its own approved, named profile"
+                f"{phase_name} requires its own approved, named profile"
             )
         if profile.mode not in (
             OperatingState.CHARGE,
             OperatingState.DISCHARGE,
         ):
-            raise NHRValidationError("Phase 3B mode must be CHARGE or DISCHARGE")
+            raise NHRValidationError(
+                f"{phase_name} mode must be CHARGE or DISCHARGE"
+            )
         if not 0.0 < profile.current_a <= LowSetpointValidator.MAX_CURRENT_A:
-            raise NHRValidationError("Phase 3B current must be > 0 and <= 1 A")
+            raise NHRValidationError(
+                f"{phase_name} current must be > 0 and <= 1 A"
+            )
         if not 0.0 < profile.power_w <= LowSetpointValidator.MAX_POWER_W:
-            raise NHRValidationError("Phase 3B power must be > 0 and <= 100 W")
+            raise NHRValidationError(
+                f"{phase_name} power must be > 0 and <= 100 W"
+            )
         if not 0.0 < profile.duration_s <= LowSetpointValidator.MAX_DURATION_S:
-            raise NHRValidationError("Phase 3B duration must be > 0 and <= 2 s")
+            raise NHRValidationError(
+                f"{phase_name} duration must be > 0 and <= 2 s"
+            )
         if not 1.0 <= profile.arm_duration_s <= 30.0:
             raise NHRValidationError(
-                "Phase 3B arm duration must be between 1 and 30 s"
+                f"{phase_name} arm duration must be between 1 and 30 s"
             )
         if profile.arm_duration_s < profile.duration_s + 2.0:
             raise NHRValidationError(
-                "Phase 3B arm duration requires at least 2 s of margin"
+                f"{phase_name} arm duration requires at least 2 s of margin"
             )
         if not (
             limits.discharge_voltage_min
@@ -270,7 +315,7 @@ class LowSetpointValidator:
             <= limits.charge_voltage_max
         ):
             raise NHRValidationError(
-                "Phase 3B voltage must remain inside the approved battery window"
+                f"{phase_name} voltage must remain inside the approved battery window"
             )
         mode_current_limit = (
             limits.charge_current
@@ -283,9 +328,13 @@ class LowSetpointValidator:
             else limits.discharge_power
         )
         if profile.current_a > mode_current_limit:
-            raise NHRValidationError("Phase 3B current exceeds approved limits")
+            raise NHRValidationError(
+                f"{phase_name} current exceeds approved limits"
+            )
         if profile.power_w > mode_power_limit:
-            raise NHRValidationError("Phase 3B power exceeds approved limits")
+            raise NHRValidationError(
+                f"{phase_name} power exceeds approved limits"
+            )
 
     def run(
         self,
@@ -366,7 +415,7 @@ class LowSetpointValidator:
 
     @staticmethod
     def _validate_current_response(
-        profile: PhaseBProfile,
+        profile: PhaseBProfile | PhaseCProfile,
         initial: Measurement,
         samples: list[Measurement],
     ) -> tuple[float, float]:
@@ -404,3 +453,165 @@ class LowSetpointValidator:
             raise NHRStateError(
                 "Expected voltage, current and power channels enabled"
             )
+
+
+class WatchdogLossValidator:
+    """Validate the observed safe state after a deliberate communication gap."""
+
+    MIN_DISCONNECT_S = 0.25
+    MAX_DISCONNECT_S = 10.0
+
+    def __init__(self, instrument: NHR9300) -> None:
+        self.instrument = instrument
+
+    @staticmethod
+    def validate_profile(profile: PhaseCProfile, limits: SafetyLimits) -> None:
+        # Reuse the deliberately conservative electrical bounds from Phase 3B.
+        LowSetpointValidator.validate_profile(
+            PhaseBProfile(
+                mode=profile.mode,
+                current_a=profile.current_a,
+                voltage_v=profile.voltage_v,
+                power_w=profile.power_w,
+                duration_s=profile.pre_disconnect_duration_s,
+                arm_duration_s=profile.arm_duration_s,
+                approved=profile.approved,
+                profile_name=profile.profile_name,
+            ),
+            limits,
+            phase_name="Phase 3C",
+        )
+        if not (
+            WatchdogLossValidator.MIN_DISCONNECT_S
+            <= profile.disconnect_duration_s
+            <= WatchdogLossValidator.MAX_DISCONNECT_S
+        ):
+            raise NHRValidationError(
+                "Phase 3C disconnect duration must be between 0.25 and 10 s"
+            )
+
+    def run(
+        self,
+        profile: PhaseCProfile,
+        limits: SafetyLimits,
+        *,
+        poll_interval_s: float = 0.05,
+    ) -> PhaseCResult:
+        self.validate_profile(profile, limits)
+        initial_status = self.instrument.read_status()
+        require_safe_start(initial_status)
+        samples: list[Measurement] = []
+        watchdog_changed = False
+
+        try:
+            self.instrument.configure_safety_limits(limits)
+            limits_readback = self.instrument.read_safety_limits()
+            mismatches = safety_limit_mismatches(limits, limits_readback)
+            if mismatches:
+                raise NHRStateError(
+                    "Safety-limit readback mismatch: " + "; ".join(mismatches)
+                )
+
+            watchdog_before = self.instrument.read_watchdog()
+            if watchdog_before:
+                raise NHRStateError(
+                    "Phase 3C requires the watchdog to be disabled initially"
+                )
+            self.instrument.set_watchdog(True)
+            watchdog_changed = True
+            watchdog_enabled = self.instrument.read_watchdog()
+            if not watchdog_enabled:
+                raise NHRStateError("The watchdog enable was not read back")
+
+            self.instrument.arm(profile.arm_duration_s)
+            initial_measurement = self.instrument.read_measurement()
+            if not (
+                limits.discharge_voltage_min
+                <= initial_measurement.voltage_v
+                <= limits.charge_voltage_max
+            ):
+                raise NHRStateError(
+                    "Measured voltage is outside the approved battery window"
+                )
+
+            self.instrument.configure_setpoints(
+                Setpoints(
+                    state=profile.mode,
+                    voltage=profile.voltage_v,
+                    current=profile.current_a,
+                    power=profile.power_w,
+                    voltage_enabled=True,
+                    current_enabled=True,
+                    power_enabled=True,
+                )
+            )
+            active_status = self.instrument.read_status()
+            LowSetpointValidator._require_active_status(active_status, profile.mode)
+
+            deadline = time.monotonic() + profile.pre_disconnect_duration_s
+            while time.monotonic() < deadline:
+                self.instrument.check_runtime_safety()
+                samples.append(self.instrument.read_measurement())
+                time.sleep(
+                    min(poll_interval_s, max(0.0, deadline - time.monotonic()))
+                )
+            expected_delta, observed_delta = (
+                LowSetpointValidator._validate_current_response(
+                    profile, initial_measurement, samples
+                )
+            )
+
+            disconnected_at = datetime.now(timezone.utc)
+            self.instrument.close()
+            try:
+                self.instrument.read_status()
+            except NHRConnectionError as exc:
+                communication_error = f"{type(exc).__name__}: {exc}"
+            else:
+                raise NHRStateError(
+                    "The facade still accepted a read after communication closed"
+                )
+
+            time.sleep(profile.disconnect_duration_s)
+            self.instrument.connect()
+            reconnected_at = datetime.now(timezone.utc)
+            status_after_reconnect = self.instrument.read_status()
+            watchdog_after_reconnect = self.instrument.read_watchdog()
+            require_disabled_inactive(status_after_reconnect)
+        finally:
+            # Reconnection is also the first recovery attempt after any failure.
+            self.instrument.connect()
+            try:
+                self.instrument.configure_setpoints(
+                    Setpoints(state=OperatingState.STANDBY)
+                )
+            finally:
+                try:
+                    self.instrument.disable()
+                finally:
+                    if watchdog_changed:
+                        self.instrument.set_watchdog(False)
+
+        watchdog_disabled = self.instrument.read_watchdog()
+        if watchdog_disabled:
+            raise NHRStateError("The watchdog remained enabled after cleanup")
+        final_status = self.instrument.read_status()
+        require_disabled_inactive(final_status)
+        return PhaseCResult(
+            initial_status=initial_status,
+            initial_measurement=initial_measurement,
+            safety_limits_readback=limits_readback,
+            watchdog_before=watchdog_before,
+            watchdog_enabled_readback=watchdog_enabled,
+            active_status=active_status,
+            active_measurements=tuple(samples),
+            expected_current_delta_a=expected_delta,
+            observed_current_delta_a=observed_delta,
+            communication_error=communication_error,
+            disconnected_at_utc=disconnected_at,
+            reconnected_at_utc=reconnected_at,
+            status_after_reconnect=status_after_reconnect,
+            watchdog_after_reconnect=watchdog_after_reconnect,
+            watchdog_disabled_readback=watchdog_disabled,
+            final_status=final_status,
+        )

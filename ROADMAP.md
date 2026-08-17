@@ -73,6 +73,12 @@ est de -0,572 A pour -0,500 A attendu; la tension est restée entre 89,108 et
 `Enabled=False`, consignes à zéro et tous les canaux désactivés. L’acquisition
 a terminé sans erreur à environ 10 Hz, avec 14 overruns sur 19 échantillons.
 
+État logiciel de la phase C : le watchdog dispose maintenant d'une relecture
+IVI explicite et le runner `scripts/session3c_watchdog_loss.py` encadre une
+faible consigne, une fermeture volontaire de communication, la reconnexion et
+le nettoyage final. Le simulateur couvre le déclenchement attendu et le cas où
+la sortie demeure active. Aucun essai 3C réel n'a encore été exécuté.
+
 Terminé lorsque chaque transition connectée est prévisible et revient à
 `standby` puis `disabled`. Une perte de liaison doit être traitée séparément :
 après la coupure, le logiciel ne peut plus envoyer ces commandes et dépend du
