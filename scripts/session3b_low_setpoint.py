@@ -12,10 +12,17 @@ from typing import Any
 from nhr9300 import NHR9300, OperatingState, StaticInterlockProvider
 from nhr9300.acquisition import AcquisitionCollector
 from nhr9300.backends.ivi import IVIBackend
-from nhr9300.safety_validation import LowSetpointValidator, PhaseBProfile
+from nhr9300.safety_validation import (
+    LowSetpointValidator,
+    PhaseBProfile,
+    require_safe_start,
+)
 from nhr9300.types import to_jsonable
 
-from session3_safety import load_limits
+try:
+    from session3_safety import load_limits
+except ModuleNotFoundError:
+    from scripts.session3_safety import load_limits
 
 
 WRITE_ACK = "SUPERVISED_SESSION3B_LOW_SETPOINT_READY"
@@ -55,6 +62,7 @@ def main() -> int:
 
     profile_data, limits = load_limits(args.bench_profile)
     phase_b = load_phase_b(profile_data)
+    LowSetpointValidator.validate_profile(phase_b, limits)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output = args.output / run_id
     output.mkdir(parents=True, exist_ok=False)
@@ -79,8 +87,13 @@ def main() -> int:
         "started_at_utc": datetime.now(timezone.utc),
         "passed": False,
     }
+    cleanup_authorized = False
     try:
         instrument.connect()
+        initial_status = instrument.read_status()
+        report["initial_status"] = to_jsonable(initial_status)
+        require_safe_start(initial_status)
+        cleanup_authorized = True
         collector.start()
         result = LowSetpointValidator(instrument).run(phase_b, limits)
         report["result"] = to_jsonable(result)
@@ -99,12 +112,15 @@ def main() -> int:
         except Exception as exc:
             report["collector_error"] = f"{type(exc).__name__}: {exc}"
             report["passed"] = False
-        try:
-            instrument.emergency_stop("Session 3B final cleanup")
-            report["cleanup_status"] = to_jsonable(instrument.read_status())
-        except Exception as exc:
-            report["cleanup_error"] = f"{type(exc).__name__}: {exc}"
-            report["passed"] = False
+        if cleanup_authorized:
+            try:
+                instrument.emergency_stop("Session 3B final cleanup")
+                report["cleanup_status"] = to_jsonable(instrument.read_status())
+            except Exception as exc:
+                report["cleanup_error"] = f"{type(exc).__name__}: {exc}"
+                report["passed"] = False
+        else:
+            report["cleanup_skipped"] = "Initial safe-start gate did not pass"
         try:
             instrument.close()
         except Exception as exc:

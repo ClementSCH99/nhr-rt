@@ -233,8 +233,8 @@ class LowSetpointValidator:
     def __init__(self, instrument: NHR9300) -> None:
         self.instrument = instrument
 
+    @staticmethod
     def validate_profile(
-        self,
         profile: PhaseBProfile,
         limits: SafetyLimits,
     ) -> None:
@@ -247,11 +247,11 @@ class LowSetpointValidator:
             OperatingState.DISCHARGE,
         ):
             raise NHRValidationError("Phase 3B mode must be CHARGE or DISCHARGE")
-        if not 0.0 < profile.current_a <= self.MAX_CURRENT_A:
+        if not 0.0 < profile.current_a <= LowSetpointValidator.MAX_CURRENT_A:
             raise NHRValidationError("Phase 3B current must be > 0 and <= 1 A")
-        if not 0.0 < profile.power_w <= self.MAX_POWER_W:
+        if not 0.0 < profile.power_w <= LowSetpointValidator.MAX_POWER_W:
             raise NHRValidationError("Phase 3B power must be > 0 and <= 100 W")
-        if not 0.0 < profile.duration_s <= self.MAX_DURATION_S:
+        if not 0.0 < profile.duration_s <= LowSetpointValidator.MAX_DURATION_S:
             raise NHRValidationError("Phase 3B duration must be > 0 and <= 2 s")
         if not 1.0 <= profile.arm_duration_s <= 30.0:
             raise NHRValidationError(
