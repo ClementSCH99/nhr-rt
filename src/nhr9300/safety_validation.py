@@ -72,6 +72,21 @@ class PhaseCProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class PhaseCActiveResult:
+    """Evidence captured immediately before communication is interrupted."""
+
+    initial_status: InstrumentStatus
+    initial_measurement: Measurement
+    safety_limits_readback: SafetyLimitsReadback
+    watchdog_before: bool
+    watchdog_enabled_readback: bool
+    active_status: InstrumentStatus
+    active_measurements: tuple[Measurement, ...]
+    expected_current_delta_a: float
+    observed_current_delta_a: float
+
+
+@dataclass(frozen=True, slots=True)
 class PhaseCResult:
     initial_status: InstrumentStatus
     initial_measurement: Measurement
@@ -497,12 +512,68 @@ class WatchdogLossValidator:
         *,
         poll_interval_s: float = 0.05,
     ) -> PhaseCResult:
+        active = self.prepare_active(
+            profile, limits, poll_interval_s=poll_interval_s
+        )
+        try:
+            disconnected_at = datetime.now(timezone.utc)
+            self.instrument.close()
+            try:
+                self.instrument.read_status()
+            except NHRConnectionError as exc:
+                communication_error = f"{type(exc).__name__}: {exc}"
+            else:
+                raise NHRStateError(
+                    "The facade still accepted a read after communication closed"
+                )
+
+            time.sleep(profile.disconnect_duration_s)
+            self.instrument.connect()
+            reconnected_at = datetime.now(timezone.utc)
+            status_after_reconnect = self.instrument.read_status()
+            watchdog_after_reconnect = self.instrument.read_watchdog()
+            require_disabled_inactive(status_after_reconnect)
+        finally:
+            self.restore_safe_state(disable_watchdog=True)
+
+        watchdog_disabled = self.instrument.read_watchdog()
+        if watchdog_disabled:
+            raise NHRStateError("The watchdog remained enabled after cleanup")
+        final_status = self.instrument.read_status()
+        require_disabled_inactive(final_status)
+        return PhaseCResult(
+            initial_status=active.initial_status,
+            initial_measurement=active.initial_measurement,
+            safety_limits_readback=active.safety_limits_readback,
+            watchdog_before=active.watchdog_before,
+            watchdog_enabled_readback=active.watchdog_enabled_readback,
+            active_status=active.active_status,
+            active_measurements=active.active_measurements,
+            expected_current_delta_a=active.expected_current_delta_a,
+            observed_current_delta_a=active.observed_current_delta_a,
+            communication_error=communication_error,
+            disconnected_at_utc=disconnected_at,
+            reconnected_at_utc=reconnected_at,
+            status_after_reconnect=status_after_reconnect,
+            watchdog_after_reconnect=watchdog_after_reconnect,
+            watchdog_disabled_readback=watchdog_disabled,
+            final_status=final_status,
+        )
+
+    def prepare_active(
+        self,
+        profile: PhaseCProfile,
+        limits: SafetyLimits,
+        *,
+        poll_interval_s: float = 0.05,
+    ) -> PhaseCActiveResult:
+        """Reach and verify the low active state, leaving watchdog ownership to caller."""
         self.validate_profile(profile, limits)
         initial_status = self.instrument.read_status()
         require_safe_start(initial_status)
         samples: list[Measurement] = []
         watchdog_changed = False
-
+        completed = False
         try:
             self.instrument.configure_safety_limits(limits)
             limits_readback = self.instrument.read_safety_limits()
@@ -560,58 +631,33 @@ class WatchdogLossValidator:
                     profile, initial_measurement, samples
                 )
             )
-
-            disconnected_at = datetime.now(timezone.utc)
-            self.instrument.close()
-            try:
-                self.instrument.read_status()
-            except NHRConnectionError as exc:
-                communication_error = f"{type(exc).__name__}: {exc}"
-            else:
-                raise NHRStateError(
-                    "The facade still accepted a read after communication closed"
-                )
-
-            time.sleep(profile.disconnect_duration_s)
-            self.instrument.connect()
-            reconnected_at = datetime.now(timezone.utc)
-            status_after_reconnect = self.instrument.read_status()
-            watchdog_after_reconnect = self.instrument.read_watchdog()
-            require_disabled_inactive(status_after_reconnect)
+            result = PhaseCActiveResult(
+                initial_status=initial_status,
+                initial_measurement=initial_measurement,
+                safety_limits_readback=limits_readback,
+                watchdog_before=watchdog_before,
+                watchdog_enabled_readback=watchdog_enabled,
+                active_status=active_status,
+                active_measurements=tuple(samples),
+                expected_current_delta_a=expected_delta,
+                observed_current_delta_a=observed_delta,
+            )
+            completed = True
+            return result
         finally:
-            # Reconnection is also the first recovery attempt after any failure.
-            self.instrument.connect()
-            try:
-                self.instrument.configure_setpoints(
-                    Setpoints(state=OperatingState.STANDBY)
-                )
-            finally:
-                try:
-                    self.instrument.disable()
-                finally:
-                    if watchdog_changed:
-                        self.instrument.set_watchdog(False)
+            if not completed and watchdog_changed:
+                self.restore_safe_state(disable_watchdog=True)
 
-        watchdog_disabled = self.instrument.read_watchdog()
-        if watchdog_disabled:
-            raise NHRStateError("The watchdog remained enabled after cleanup")
-        final_status = self.instrument.read_status()
-        require_disabled_inactive(final_status)
-        return PhaseCResult(
-            initial_status=initial_status,
-            initial_measurement=initial_measurement,
-            safety_limits_readback=limits_readback,
-            watchdog_before=watchdog_before,
-            watchdog_enabled_readback=watchdog_enabled,
-            active_status=active_status,
-            active_measurements=tuple(samples),
-            expected_current_delta_a=expected_delta,
-            observed_current_delta_a=observed_delta,
-            communication_error=communication_error,
-            disconnected_at_utc=disconnected_at,
-            reconnected_at_utc=reconnected_at,
-            status_after_reconnect=status_after_reconnect,
-            watchdog_after_reconnect=watchdog_after_reconnect,
-            watchdog_disabled_readback=watchdog_disabled,
-            final_status=final_status,
-        )
+    def restore_safe_state(self, *, disable_watchdog: bool) -> None:
+        """Reconnect if needed, then zero channels, disable output and watchdog."""
+        self.instrument.connect()
+        try:
+            self.instrument.configure_setpoints(
+                Setpoints(state=OperatingState.STANDBY)
+            )
+        finally:
+            try:
+                self.instrument.disable()
+            finally:
+                if disable_watchdog:
+                    self.instrument.set_watchdog(False)

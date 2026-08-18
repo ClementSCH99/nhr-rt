@@ -111,8 +111,9 @@ Une activation exige, dans cet ordre :
 
 Une reconnexion ne réactive jamais automatiquement l’appareil. En cas de
 défaillance pendant une routine, le moteur tente `standby`, puis `disable`.
-Le watchdog reste un opt-in explicite tant que son comportement réel n’a pas
-été validé sur le banc.
+Le watchdog reste un opt-in explicite. Son comportement a été validé lors
+d'une perte abrupte de processus, mais son délai exact n'est pas configurable
+par l'API IVI.
 
 ## Simulateur et service
 
@@ -297,7 +298,8 @@ mesure initiale, avec une tolérance adaptée au premier essai à faible courant
 
 La phase 3C vérifie le cas où le logiciel ne peut plus envoyer sa commande de
 nettoyage. Elle active explicitement le watchdog, applique une faible consigne,
-ferme la communication pendant une durée bornée, puis se reconnecte. Le test
+termine un processus sans appeler `IVI Close`, puis se reconnecte après une
+durée bornée. Le test
 réussit seulement si le module est alors désactivé et dans `OFF` ou `STANDBY`.
 
 Le profil `phase_c` impose les mêmes plafonds électriques que 3B, une coupure
@@ -313,6 +315,16 @@ présent et l'acquittement distinct
 Le pilote IVI expose l'activation du watchdog, mais aucun délai configurable.
 `disconnect_duration_s` est donc une fenêtre d'observation du test, pas un
 réglage envoyé au NHR.
+
+Fermer complètement PowerPanel avant 3C. Une autre application qui communique
+avec le module peut masquer la perte de liaison. L'option
+`--connection-loss-preflight` valide d'abord la coupure et la reconnexion avec
+le NHR désactivé, sans watchdog ni consigne.
+
+Validation réelle du 2026-08-18 : avec PowerPanel fermé, le prétest non
+énergisant et l'essai en décharge à 0,5 A ont réussi. Après 10 secondes de
+perte abrupte, la reconnexion a observé `OFF`, `Enabled=False`, consignes à
+zéro et watchdog revenu à `false`.
 
 ## Routines
 

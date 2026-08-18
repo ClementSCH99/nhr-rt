@@ -302,6 +302,24 @@ def test_phase_c_observes_watchdog_trip_and_restores_safe_state() -> None:
     assert backend.watchdog_enabled is False
 
 
+def test_phase_c_active_evidence_exists_before_connection_loss() -> None:
+    backend = SimulatedBackend("sim", initial_voltage_v=350.0)
+    instrument = NHR9300(
+        "sim", backend, interlocks=[StaticInterlockProvider(safe=True)]
+    )
+
+    with instrument:
+        validator = WatchdogLossValidator(instrument)
+        active = validator.prepare_active(phase_c_profile(), approved_limits())
+        assert active.watchdog_enabled_readback is True
+        assert active.active_status.enabled is True
+        assert active.observed_current_delta_a == pytest.approx(-0.5)
+        validator.restore_safe_state(disable_watchdog=True)
+
+    assert backend.enabled is False
+    assert backend.watchdog_enabled is False
+
+
 def test_phase_c_fails_if_output_is_still_active_after_reconnect() -> None:
     backend = SimulatedBackend(
         "sim", initial_voltage_v=350.0, watchdog_timeout_s=60.0

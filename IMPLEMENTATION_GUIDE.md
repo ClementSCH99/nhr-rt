@@ -490,10 +490,11 @@ Session 3A soit vérifiable directement dans le code.
   de courant mesuré par rapport au point initial.
 - **`PhaseCProfile`** ajoute une courte durée de communication fermée; elle ne
   configure pas un délai matériel, car l'API IVI n'en expose pas.
-- **`WatchdogLossValidator`** relit le watchdog activé, confirme la réponse à
-  la faible consigne, ferme la session, vérifie l'erreur locale attendue, puis
-  se reconnecte et exige une sortie inactive. Son nettoyage remet consignes,
-  sortie et watchdog dans leur état sûr.
+- **`WatchdogLossValidator.prepare_active()`** relit le watchdog activé et
+  confirme la réponse à la faible consigne avant de rendre les preuves au
+  processus qui provoquera la perte.
+- **`restore_safe_state()`** reconnecte au besoin puis remet consignes, sortie
+  et watchdog dans leur état sûr.
 
 ## 13. `service.py` — propriétaire local du NHR
 
@@ -635,8 +636,13 @@ de l'exécution de l'autre.
 ### `scripts/session3c_watchdog_loss.py`
 
 - **`load_phase_c()`** charge l'approbation et les paramètres propres à 3C.
-- **`main()`** exige l'acquittement 3C, écrit toujours un rapport horodaté et
-  effectue une dernière tentative de nettoyage après succès ou erreur.
+- **`prepare_worker()`** écrit son étape et ses preuves, puis termine le
+  processus sans `IVI Close`. Le mode prétest ne touche ni watchdog ni consigne.
+- **`recovery_worker()`** se reconnecte séparément, sauvegarde d'abord l'état
+  observé et nettoie ensuite un essai actif.
+- **`run_worker()`** appelle directement le Python 32 bits réel et impose un
+  délai maximal, ce qui évite les processus orphelins du lanceur virtuel.
+- **`main()`** orchestre les deux processus et écrit toujours le rapport final.
 - L'absence d'acquisition continue pendant la coupure est volontaire : aucune
   donnée ne peut être obtenue par la liaison que le test vient de fermer.
 

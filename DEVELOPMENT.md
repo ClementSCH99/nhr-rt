@@ -123,7 +123,13 @@ runner 3B est maintenant distinct et traite `SetState` comme la frontière
   communication, puis exige un état désactivé après reconnexion.
 - Le nettoyage remet les consignes à zéro, désactive la sortie et le watchdog.
 - Le simulateur couvre un watchdog qui déclenche et un watchdog trop lent qui
-  laisse la sortie active. Aucun essai 3C réel n'a encore été exécuté.
+  laisse la sortie active.
+- Le runner réel utilise deux processus avec délais maximaux : préparation,
+  perte abrupte sans `IVI Close`, puis récupération indépendante. Les preuves
+  sont écrites avant chaque appel IVI potentiellement bloquant.
+- PowerPanel doit être fermé afin qu'une autre application ne maintienne pas
+  la communication. Le prétest désactivé et l'essai réel de 10 secondes ont
+  réussi le 2026-08-18.
 
 ### 4. Mesures de capacité en Ah
 
@@ -156,11 +162,11 @@ NHR simultanément.
 
 | Contrôle | État |
 |---|---|
-| Tests automatisés | 43 réussis, 2 matériels ignorés — 2026-08-17 |
+| Tests automatisés | 44 réussis, 2 matériels ignorés — 2026-08-18 |
 | Revue du diff depuis `03e1b44` | À faire par le propriétaire |
 | Session 3A sur le NHR réel | Réussie sur `DC PM 1`, module 613 |
 | Session 3B sur le NHR réel | Réussie à 0,5 A pendant 1 seconde |
-| Session 3C sur le NHR réel | Non exécutée; profil et supervision requis |
+| Session 3C sur le NHR réel | Réussie à 0,5 A, perte abrupte de 10 secondes |
 
 Ordre de revue conseillé :
 

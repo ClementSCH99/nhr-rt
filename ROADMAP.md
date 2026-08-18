@@ -73,11 +73,14 @@ est de -0,572 A pour -0,500 A attendu; la tension est restée entre 89,108 et
 `Enabled=False`, consignes à zéro et tous les canaux désactivés. L’acquisition
 a terminé sans erreur à environ 10 Hz, avec 14 overruns sur 19 échantillons.
 
-État logiciel de la phase C : le watchdog dispose maintenant d'une relecture
-IVI explicite et le runner `scripts/session3c_watchdog_loss.py` encadre une
-faible consigne, une fermeture volontaire de communication, la reconnexion et
-le nettoyage final. Le simulateur couvre le déclenchement attendu et le cas où
-la sortie demeure active. Aucun essai 3C réel n'a encore été exécuté.
+État de la phase C au 2026-08-18 : le runner sépare la préparation et la
+récupération dans des processus bornés, conserve les preuves avant la coupure
+et propose un prétest non énergisant. Avec PowerPanel fermé, ce prétest puis
+une décharge de 0,5 A ont réussi. Après une perte abrupte de 10 secondes, la
+reconnexion a observé `OFF`, `Enabled=False`, consignes à zéro et watchdog
+revenu à `false`. Un arrêt propre avec PowerPanel ouvert n'avait pas déclenché
+la protection après 1 seconde; ce scénario ne représentait pas une perte de
+communication exclusive.
 
 Terminé lorsque chaque transition connectée est prévisible et revient à
 `standby` puis `disabled`. Une perte de liaison doit être traitée séparément :
