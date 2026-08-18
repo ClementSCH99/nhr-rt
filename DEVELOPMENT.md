@@ -113,7 +113,7 @@ runner 3B est maintenant distinct et traite `SetState` comme la frontière
 - `scripts/session3b_low_setpoint.py` produit un CSV à 10 Hz et un rapport,
   puis tente toujours `standby` et `disable`.
 - La phase 3B réelle a réussi sur `DC PM 1`, module 613, à 0,5 A pendant
-  1 seconde. Le rapport reste local sous `session3b-results/`.
+  1 seconde. La preuve finale est archivée localement sous `archives/`.
 
 ### 3. Validation logicielle de la Session 3C
 

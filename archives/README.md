@@ -1,0 +1,24 @@
+# Local validation archives
+
+The ZIP files in this directory are intentionally ignored by Git. They retain
+the useful local evidence while keeping generated result folders out of the
+working repository.
+
+| Archive | Retained evidence |
+|---|---|
+| `session2-readonly-acquisitions-20260817.zip` | Two long read-only NHR CSV acquisitions from Session 2 |
+| `session3a-validated-20260817.zip` | Final approved 3A run `20260817T200404Z` |
+| `session3b-validated-20260817.zip` | Final approved 3B run `20260817T204115Z` |
+| `session3c-validated-20260818.zip` | Disabled connection-loss preflight `20260818T175945Z` and final active run `20260818T180011Z` |
+
+Failed, superseded and empty runs are not archived. The runner scripts will
+recreate their normal result directories when future tests are executed.
+
+## SHA-256
+
+```text
+20CA6FDC321E1B3B60BE919E42BBB1D9D4B6A793E52456A912FE7F1D4A8764A7  session2-readonly-acquisitions-20260817.zip
+4D270A876678F6AA13E9DC6AF44E95ECC86A2EEDA682BA37ED04EDC60E4034F2  session3a-validated-20260817.zip
+25B4A98A3664472B55E17C22DDE58AA89BF38E8B1E8D625CD3C421DF05B361AD  session3b-validated-20260817.zip
+54631589676256AAAB47D395EECA9EC3784068C90DA8A1CEB9545EFBCA61FC96  session3c-validated-20260818.zip
+```
