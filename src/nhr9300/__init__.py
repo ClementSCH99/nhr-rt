@@ -2,6 +2,12 @@
 
 from .backends import SimulatedBackend
 from .client import NHRServiceClient
+from .cc_profiles import (
+    CCHoldProfile,
+    CCProfileConfiguration,
+    load_cc_profile,
+    validate_cc_profile,
+)
 from .instrument import NHR9300
 from .interlocks import InterlockProvider, StaticInterlockProvider
 from .types import (
@@ -17,6 +23,8 @@ from .types import (
 
 __all__ = [
     "Capabilities",
+    "CCHoldProfile",
+    "CCProfileConfiguration",
     "Identity",
     "InstrumentStatus",
     "InterlockProvider",
@@ -29,4 +37,6 @@ __all__ = [
     "Setpoints",
     "SimulatedBackend",
     "StaticInterlockProvider",
+    "load_cc_profile",
+    "validate_cc_profile",
 ]

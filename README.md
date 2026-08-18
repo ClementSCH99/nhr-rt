@@ -8,6 +8,8 @@ Pour comprendre l'architecture, la répartition des responsabilités et les
 modifications depuis la dernière phase validée, commencer par
 [DEVELOPMENT.md](DEVELOPMENT.md). Pour approfondir chaque module et la logique
 de ses fonctions, consulter [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md).
+Le contrat et les résultats acceptés du premier palier CC réel sont archivés
+dans [archives/SESSION4.md](archives/SESSION4.md).
 
 ## État de la v1
 
@@ -326,15 +328,49 @@ Validation réelle du 2026-08-18 : avec PowerPanel fermé, le prétest non
 perte abrupte, la reconnexion a observé `OFF`, `Enabled=False`, consignes à
 zéro et watchdog revenu à `false`.
 
+## Palier CC supervisé
+
+Le runner `scripts/supervised_cc_hold.py`, validé pendant la Session 4, accepte
+explicitement `--simulate` ou `--hardware`. Il couvre charge et décharge avec
+une fin par durée, tension NHR,
+capacité NHR ou énergie NHR. La durée reste un délai maximal : une condition non
+atteinte avant ce délai fait échouer le test.
+
+Les alias `capacity_ah` et `energy_wh` comparent une magnitude de débit
+positive. Les compteurs bruts de décharge NHR, observés négatifs sur le banc,
+restent signés dans le CSV et la mesure terminale du rapport.
+
+Les cinq templates réutilisables sont sous `examples/cc_*.example.json` et
+portent tous `approved: false`. Quatre correspondent aux essais matériels
+proposés; le cinquième valide la future condition de température uniquement en
+simulation. Sur le banc actuel, la température UUT n'est pas câblée et reste
+explicitement ignorée.
+
+Le runner écrit un CSV à 10 Hz et un `report.json`, puis remet les consignes à
+zéro, désactive la sortie et le watchdog et vérifie ces postconditions après une
+reconnexion indépendante. Il conserve tous les échantillons actifs, puis
+vérifie automatiquement, après le temps de stabilisation approuvé, leur nombre
+minimal et leur écart à la consigne de courant. Le test matériel nécessite :
+
+- un profil local revu et doublement approuvé;
+- `--hardware` et la ressource correspondant au profil;
+- `NHR9300_CC_ACK=SUPERVISED_CC_READY`;
+- l'opérateur présent et l'arrêt d'urgence accessible.
+
+Le contrat historique, les résultats et les corrections issues du banc sont
+dans [archives/SESSION4.md](archives/SESSION4.md). Les preuves complètes sont
+conservées localement dans `archives/session4-validated-20260818.zip`.
+
 ## Routines
 
 [cc_hold.example.yaml](examples/cc_hold.example.yaml) montre le schéma YAML v1.
 Son profil porte volontairement `approved: false` et ne peut donc pas activer
 un instrument sans modification consciente.
 
-Les conditions de terminaison v1 acceptent `voltage`, `current`, `power` ou
-`temperature` et les opérateurs `<`, `<=`, `>`, `>=`, `==`. Une routine
-retourne un `RoutineResult` avec état, motif, événements, erreurs et CSV.
+Les conditions génériques acceptent `voltage`, `current`, `power`,
+`capacity_ah`, `energy_wh` ou `temperature` et les opérateurs `<`, `<=`, `>`,
+`>=`, `==`. Une routine retourne un `RoutineResult` avec état, motif précis de
+terminaison, mesure terminale, événements, erreurs et CSV.
 
 ## Tests
 

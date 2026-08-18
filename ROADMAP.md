@@ -5,8 +5,10 @@
 La v1 logicielle est fonctionnelle en simulation : classe typée, sécurité,
 acquisition CSV, routines Python/YAML, service local et client 64 bits.
 La suite automatisée couvre la simulation, le service et le client; les tests
-matériels sont désactivés par défaut. Les écritures IVI n’ont pas encore été
-validées sur le cycler réel.
+matériels sont désactivés par défaut. Les Sessions 3A, 3B et 3C ont validé sur
+le cycler réel les écritures non énergisantes, une transition à faible consigne
+et le comportement du watchdog après perte abrupte. La prochaine frontière est
+l'exécution complète et répétable d'une routine CC réelle.
 
 ## Session 2 — Valider la lecture réelle
 
@@ -89,17 +91,35 @@ comportement réel du watchdog.
 
 ## Session 4 — Premier palier CC réel
 
-Objectif : exécuter le petit palier charge ou décharge déjà couvert en
-simulation.
+**Terminée et acceptée le 2026-08-18.**
 
-- Revoir et signer le profil JSON du banc.
-- Lancer le wrapper énergisant avec opérateur et arrêt d’urgence.
-- Comparer mesures, consignes et chronologie au comportement attendu.
-- Vérifier la condition de terminaison, le CSV et le `RoutineResult`.
-- Corriger les différences entre simulateur et équipement réel.
+Objectif : exécuter un palier CC court avec un profil approuvé, produire une
+preuve cohérente entre le CSV, le motif de fin et le résultat de routine, puis
+vérifier l'état sûr par une reconnexion indépendante.
 
-Terminé lorsque plusieurs répétitions donnent le même résultat et laissent
-systématiquement le module dans un état sûr.
+- Faire approuver le contrat d'architecture et le profil réel par le
+  propriétaire du projet.
+- Implémenter un runner opérateur dédié, ses protections, son rapport JSON et
+  ses tests simulés; conserver le test matériel `pytest` comme régression.
+- Exécuter ensemble un prévol non énergisant, puis un seul palier actif.
+- Comparer limites, mesures, consignes, motif de fin, chronologie, CSV et
+  `RoutineResult`.
+- Vérifier le nettoyage et une reconnexion indépendante avant toute répétition.
+- Répéter deux fois sans modifier le profil après revue du premier résultat.
+
+La Session 4 couvre charge et décharge. Les profils approuvés demandent 5 A et
+500 W, avec des arrêts par durée, tension, capacité et énergie, dans des
+limites de sécurité de 10 A et 1000 W. Le profil tension peut durer au plus
+60 secondes; les trois autres profils restent limités à 12 secondes.
+La température UUT non câblée est ignorée sur le matériel; sa future condition
+d'arrêt est couverte uniquement en simulation. Le watchdog est obligatoire
+pendant le palier matériel et vérifié désactivé après nettoyage.
+
+Les quatre cas réels approuvés — durée, capacité, énergie et tension — ont
+passé avec un état sûr vérifié par reconnexion. Le contrat, les corrections et
+les résultats sont archivés dans
+[archives/SESSION4.md](archives/SESSION4.md); les preuves brutes sont dans
+`archives/session4-validated-20260818.zip`.
 
 ## Session 5 — Intégration et routines avancées
 

@@ -169,6 +169,11 @@ class RoutineResult:
     started_at: datetime | None = None
     ended_at: datetime | None = None
     csv_path: str | None = None
+    termination_reason: str | None = None
+    termination_field: str | None = None
+    termination_value: float | None = None
+    termination_baseline: float | None = None
+    termination_measurement: Measurement | None = None
     events: list[RoutineEvent] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 

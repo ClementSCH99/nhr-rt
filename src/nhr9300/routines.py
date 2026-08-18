@@ -29,19 +29,52 @@ class Condition:
     field: str
     operator: str
     value: float
+    relative: bool = False
 
-    def evaluate(self, measurement: Measurement) -> bool:
+    def measurement_value(
+        self,
+        measurement: Measurement,
+        mode: OperatingState | None = None,
+    ) -> float | None:
         fields = {
             "voltage": measurement.voltage_v,
             "current": measurement.current_a,
             "power": measurement.power_w,
             "temperature": measurement.temperature_c,
+            "capacity_charge_ah": measurement.capacity_charge_ah,
+            "capacity_discharge_ah": measurement.capacity_discharge_ah,
+            "energy_charge_kwh": measurement.energy_charge_kwh,
+            "energy_discharge_kwh": measurement.energy_discharge_kwh,
         }
+        if self.field == "capacity_ah":
+            if mode == OperatingState.CHARGE:
+                value = measurement.capacity_charge_ah
+                return None if value is None else abs(value)
+            if mode == OperatingState.DISCHARGE:
+                value = measurement.capacity_discharge_ah
+                return None if value is None else abs(value)
+            raise NHRValidationError("capacity_ah requires CHARGE or DISCHARGE mode")
+        if self.field == "energy_wh":
+            if mode == OperatingState.CHARGE:
+                value = measurement.energy_charge_kwh
+            elif mode == OperatingState.DISCHARGE:
+                value = measurement.energy_discharge_kwh
+            else:
+                raise NHRValidationError("energy_wh requires CHARGE or DISCHARGE mode")
+            return None if value is None else abs(value) * 1000.0
         if self.field not in fields:
             raise NHRValidationError(f"Unsupported condition field: {self.field}")
-        actual = fields[self.field]
-        if actual is None:
-            return False
+        return fields[self.field]
+
+    def evaluate(
+        self,
+        measurement: Measurement,
+        mode: OperatingState | None = None,
+    ) -> bool:
+        actual = self.measurement_value(measurement, mode)
+        return False if actual is None else self.evaluate_value(actual)
+
+    def evaluate_value(self, actual: float) -> bool:
         comparisons: dict[str, Callable[[float, float], bool]] = {
             "<": lambda a, b: a < b,
             "<=": lambda a, b: a <= b,
@@ -112,22 +145,52 @@ class WaitStep(Step):
     duration_s: float
     condition: Condition | None = None
     poll_interval_s: float = 0.1
+    mode: OperatingState | None = None
     name = "wait"
 
     def execute(self, context: RoutineContext) -> None:
         if self.duration_s <= 0:
             raise NHRValidationError("Wait duration must be positive")
         deadline = time.monotonic() + self.duration_s
-        while time.monotonic() < deadline:
+        baseline: float | None = None
+        while True:
             if context.stop_event.is_set():
                 raise InterruptedError("Routine stop requested")
             if context.collector.error:
                 raise NHRRoutineError(context.collector.error)
             context.instrument.check_interlocks()
             measurement = context.instrument.read_measurement()
-            if self.condition and self.condition.evaluate(measurement):
-                return
-            context.stop_event.wait(self.poll_interval_s)
+            if self.condition:
+                actual = self.condition.measurement_value(measurement, self.mode)
+                if actual is None:
+                    raise NHRRoutineError(
+                        f"Termination field {self.condition.field!r} is unavailable"
+                    )
+                if self.condition.relative:
+                    if baseline is None:
+                        baseline = actual
+                    compared = actual - baseline
+                else:
+                    compared = actual
+                if self.condition.evaluate_value(compared):
+                    context.result.termination_reason = "condition"
+                    context.result.termination_field = self.condition.field
+                    context.result.termination_value = compared
+                    context.result.termination_baseline = baseline
+                    context.result.termination_measurement = measurement
+                    return
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0.0:
+                break
+            context.stop_event.wait(min(self.poll_interval_s, remaining_s))
+        if self.condition is not None:
+            context.result.termination_reason = "condition_timeout"
+            context.result.termination_field = self.condition.field
+            raise NHRRoutineError(
+                f"Termination condition {self.condition.field!r} was not reached "
+                f"within {self.duration_s:.3f} s"
+            )
+        context.result.termination_reason = "duration"
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +220,7 @@ class RoutineContext:
     instrument: NHR9300
     collector: AcquisitionCollector
     stop_event: threading.Event
+    result: RoutineResult
 
 
 class RoutineRunner:
@@ -188,7 +252,12 @@ class RoutineRunner:
 
     def run(self, routine: Routine) -> RoutineResult:
         result = self.start(routine)
-        self._thread.join()
+        try:
+            self._thread.join()
+        except KeyboardInterrupt:
+            self.stop()
+            self._thread.join(timeout=3.0)
+            raise
         return result
 
     def stop(self) -> None:
@@ -208,7 +277,7 @@ class RoutineRunner:
         result.csv_path = (
             str(self.collector.csv_path) if self.collector.csv_path is not None else None
         )
-        context = RoutineContext(self.instrument, self.collector, self._stop)
+        context = RoutineContext(self.instrument, self.collector, self._stop, result)
         try:
             for index, step in enumerate(routine.steps):
                 step_name = f"{index:02d}_{step.name}"
@@ -217,7 +286,15 @@ class RoutineRunner:
                 step.execute(context)
                 self._event(result, step_name, "completed")
             result.state = RoutineState.PASSED
-            result.reason = "Routine completed"
+            if result.termination_reason == "condition":
+                result.reason = (
+                    f"Termination condition reached: {result.termination_field}="
+                    f"{result.termination_value}"
+                )
+            elif result.termination_reason == "duration":
+                result.reason = "Configured duration elapsed"
+            else:
+                result.reason = "Routine completed"
         except InterruptedError as exc:
             result.state = RoutineState.STOPPED
             result.reason = str(exc)
@@ -249,13 +326,15 @@ def constant_current_hold(
     duration_s: float,
     arm_duration_s: float = 30.0,
     termination: Condition | None = None,
+    configure_limits: bool = True,
 ) -> Routine:
     if mode not in (OperatingState.CHARGE, OperatingState.DISCHARGE):
         raise NHRValidationError("CC hold mode must be CHARGE or DISCHARGE")
-    return Routine(
-        name=name,
-        steps=(
-            ConfigureLimitsStep(limits),
+    steps: list[Step] = []
+    if configure_limits:
+        steps.append(ConfigureLimitsStep(limits))
+    steps.extend(
+        (
             ArmStep(arm_duration_s),
             MeasureStep(),
             SetpointsStep(
@@ -269,11 +348,16 @@ def constant_current_hold(
                     power_enabled=True,
                 )
             ),
-            EnableStep(),
-            WaitStep(duration_s, termination),
+            # SetState(CHARGE/DISCHARGE) is the observed energizing boundary on
+            # real hardware; a second direct enable is neither required nor safer.
+            WaitStep(duration_s, termination, mode=mode),
             StandbyStep(),
             DisableStep(),
-        ),
+        )
+    )
+    return Routine(
+        name=name,
+        steps=tuple(steps),
     )
 
 

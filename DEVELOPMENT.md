@@ -11,14 +11,16 @@ voir [ROADMAP.md](ROADMAP.md).
 
 | Sujet | Responsable principal |
 |---|---|
-| Architecture, limites de phase et modes de fonctionnement | Propriétaire du projet |
-| Critères d'acceptation et validation finale | Propriétaire du projet |
-| Implémentation, tests automatisés et mise à jour de ce document | Codex |
-| Revue du code et décision de créer le commit de référence suivant | Ensemble |
+| Revue de l'architecture et des protections | Propriétaire du projet |
+| Valeurs et validation des profils matériels | Propriétaire du projet |
+| Implémentation, tests automatisés et documentation | Codex |
+| Prévol et tests matériels supervisés | Ensemble |
+| Acceptation finale et décision de créer le commit suivant | Propriétaire du projet |
 
-Codex peut implémenter une phase convenue de bout en bout. Une décision qui
-change l'architecture, une protection ou le comportement du banc doit cependant
-être présentée avant d'être intégrée.
+Codex implémente une phase convenue de bout en bout et prépare les preuves de
+revue. Une décision qui change l'architecture, une protection ou le
+comportement du banc doit cependant être présentée au propriétaire avant d'être
+intégrée. Les valeurs d'un profil matériel ne sont jamais approuvées par Codex.
 
 Une demande de journalisation ou de test logiciel **n'autorise jamais** une
 commande énergisante sur le NHR. Les validations matérielles restent des étapes
@@ -81,100 +83,54 @@ Le chemin de contrôle important est toujours
 Le dernier commit représente donc la dernière base acceptée, pas seulement une
 sauvegarde technique.
 
-## Changements en cours
+## Changement validé — Session 4
 
-**Base de comparaison :** `03e1b44` — `fix: expose absolute acquisition CSV path`
+**Base de comparaison :** `f76185f` — `chore: archive completed session results`
 
-Cette section décrit le diff de travail depuis cette base. Elle doit être mise à
-jour avant chaque revue.
+Cette section décrit le diff validé depuis cette base. La Session 4 a été
+acceptée par le propriétaire le 2026-08-18.
 
-### 1. Validation non énergisante de la Session 3A
+### 1. Implémentation CC issue de la Session 4
 
-- `src/nhr9300/safety_validation.py` exécute et observe séparément `disable`,
-  l'application des limites, la mise en `STANDBY` avec les canaux désactivés,
-  puis un dernier `standby`.
-- `scripts/session3_safety.py` ajoute un runner matériel supervisé. Il exige un
-  profil de banc approuvé et l'acquittement
-  `NHR9300_SESSION3_ACK=SUPERVISED_SESSION3_WRITES_READY`.
-- `examples/session3_bench.example.json` fournit un exemple volontairement non
-  approuvé.
-- `tests/test_safety_validation.py` vérifie la séquence simulée et le refus d'un
-  état initial actif ou déjà activé.
-
-Le runner 3A ne doit appeler ni `arm()`, ni `enable()`, ni le watchdog. Le
-runner 3B est maintenant distinct et traite `SetState` comme la frontière
-énergisante observée sur le NHR réel.
-
-### 2. Validation logicielle de la Session 3B
-
-- `LowSetpointValidator` limite le premier essai à 1 A, 100 W et 2 secondes.
-- Une approbation 3B séparée, un armement court, une mesure fraîche, les
-  interlocks et la relecture des limites sont obligatoires.
-- `scripts/session3b_low_setpoint.py` produit un CSV à 10 Hz et un rapport,
-  puis tente toujours `standby` et `disable`.
-- La phase 3B réelle a réussi sur `DC PM 1`, module 613, à 0,5 A pendant
-  1 seconde. La preuve finale est archivée localement sous `archives/`.
-
-### 3. Validation logicielle de la Session 3C
-
-- `read_watchdog()` relit la valeur IVI au lieu de supposer que l'écriture a
-  réussi.
-- `WatchdogLossValidator` vérifie la faible consigne avant de fermer la
-  communication, puis exige un état désactivé après reconnexion.
-- Le nettoyage remet les consignes à zéro, désactive la sortie et le watchdog.
-- Le simulateur couvre un watchdog qui déclenche et un watchdog trop lent qui
-  laisse la sortie active.
-- Le runner réel utilise deux processus avec délais maximaux : préparation,
-  perte abrupte sans `IVI Close`, puis récupération indépendante. Les preuves
-  sont écrites avant chaque appel IVI potentiellement bloquant.
-- PowerPanel doit être fermé afin qu'une autre application ne maintienne pas
-  la communication. Le prétest désactivé et l'essai réel de 10 secondes ont
-  réussi le 2026-08-18.
-
-### 4. Mesures de capacité en Ah
-
-- `Measurement` expose `capacity_charge_ah` et `capacity_discharge_ah`.
-- Les backends IVI et simulateur remplissent ces deux valeurs.
-- L'acquisition les ajoute au CSV et le service les expose dans le JSON/SSE.
-- Les tests vérifient leur présence dans le CSV simulé.
-
-Un ancien CSV ne peut pas recevoir ces colonnes après coup : il faut redémarrer
-le service et commencer une nouvelle acquisition.
-
-### 5. Propriété exclusive du port du service
-
-- Le serveur HTTP refuse maintenant de partager son port avec une autre instance.
-- Un test vérifie qu'un deuxième service ne peut pas écouter la même adresse.
-
-Cela évite qu'un ancien processus et un nouveau service semblent piloter le même
-NHR simultanément.
-
-### 6. Documentation associée
-
-- `README.md` explique la Session 3A et les nouvelles mesures.
-- `ROADMAP.md` distingue les phases A, B et C de la Session 3.
-- `EXTERNAL_USE.md` montre les champs Ah disponibles pour un client externe.
-- Le présent document ajoute le contrat de développement et le guide de revue.
-- `IMPLEMENTATION_GUIDE.md` explique les intentions et interactions de chaque
-  module, classe et fonction du projet.
+- `archives/SESSION4.md` conserve l'objectif, le hors-scope, les profils,
+  l'ordre de test, les incidents corrigés et l'acceptation finale.
+- `ROADMAP.md` part maintenant de la Session 3 réellement terminée et résume la
+  progression prévue pour le premier palier CC.
+- `src/nhr9300/cc_profiles.py` valide le contrat du profil : charge/décharge,
+  plafonds 5 A / 500 W / 60 s, double approbation, watchdog matériel et
+  température ignorée. La qualification du courant commence après le temps de
+  stabilisation explicite du profil.
+- `scripts/supervised_cc_hold.py` exécute simulation, prévol ou un seul palier
+  réel, produit les preuves et confirme le nettoyage après reconnexion.
+- `routines.py` distingue durée, condition atteinte et condition expirée; les
+  champs capacité et énergie choisissent automatiquement le compteur du mode.
+- Le simulateur intègre et réinitialise séparément capacité et énergie pour
+  charge/décharge.
+- Cinq templates non approuvés couvrent les quatre essais réels proposés et la
+  future condition de température simulée.
+- `tests/test_cc_profiles.py` couvre le schéma, les conditions, le timeout, la
+  frontière `SetState` et une exécution simulée complète du runner.
 
 ### État de validation
 
 | Contrôle | État |
 |---|---|
-| Tests automatisés | 44 réussis, 2 matériels ignorés — 2026-08-18 |
-| Revue du diff depuis `03e1b44` | À faire par le propriétaire |
-| Session 3A sur le NHR réel | Réussie sur `DC PM 1`, module 613 |
-| Session 3B sur le NHR réel | Réussie à 0,5 A pendant 1 seconde |
-| Session 3C sur le NHR réel | Réussie à 0,5 A, perte abrupte de 10 secondes |
+| Session 3 intégrée sur `main` | Oui — référence `f76185f` |
+| Contrat Session 4 documenté | Oui — décisions utilisateur intégrées |
+| Suite logicielle | 58 réussis, 2 matériels ignorés — 2026-08-18 |
+| Implémentation Session 4 | Terminée, validée et renommée pour réutilisation |
+| Profils CC réels | Approuvés puis conservés dans l'archive Session 4 |
+| Charge 5 A, arrêt durée | PASS — rapport `20260818T200733Z` |
+| Charge 5 A, arrêt capacité | PASS — rapport `20260818T201228Z` |
+| Décharge 5 A, arrêt énergie | PASS après correction du signe — `20260818T201735Z` |
+| Décharge 5 A, arrêt tension | PASS à 88,79989 V — `20260818T203842Z` |
 
-Ordre de revue conseillé :
+Ordre de revue conseillé pour le changement final :
 
-1. lire `tests/test_safety_validation.py` pour voir le comportement attendu;
-2. lire `safety_validation.py`, puis le runner `session3_safety.py`;
-3. vérifier les ajouts Ah de `types.py` jusqu'à `acquisition.py`;
-4. lire le test d'exclusivité du port dans `tests/test_service.py`;
-5. comparer le tout avec les critères de la Session 3 dans `ROADMAP.md`.
+1. lire `archives/SESSION4.md` et les preuves archivées;
+2. relire `tests/test_cc_profiles.py`, puis `src/nhr9300/cc_profiles.py`;
+3. relire `scripts/supervised_cc_hold.py` et ses chemins de nettoyage;
+4. copier et compléter les templates retenus avant la simulation commune.
 
 ## Règles de mise à jour de ce document
 

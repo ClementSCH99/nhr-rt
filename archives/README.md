@@ -10,9 +10,15 @@ working repository.
 | `session3a-validated-20260817.zip` | Final approved 3A run `20260817T200404Z` |
 | `session3b-validated-20260817.zip` | Final approved 3B run `20260817T204115Z` |
 | `session3c-validated-20260818.zip` | Disabled connection-loss preflight `20260818T175945Z` and final active run `20260818T180011Z` |
+| `session4-validated-20260818.zip` | Full Session 4 chronology: 22 reports, 15 CSV files and five approved local profiles |
 
-Failed, superseded and empty runs are not archived. The runner scripts will
+Failed, superseded and empty runs are normally not archived. Session 4 is kept
+as a complete exception because its diagnostic runs document the current
+settling-time, signed-counter and timeout-boundary behavior. Runner scripts
 recreate their normal result directories when future tests are executed.
+
+The accepted Session 4 contract and result summary are in
+[`SESSION4.md`](SESSION4.md).
 
 ## SHA-256
 
@@ -21,4 +27,5 @@ recreate their normal result directories when future tests are executed.
 4D270A876678F6AA13E9DC6AF44E95ECC86A2EEDA682BA37ED04EDC60E4034F2  session3a-validated-20260817.zip
 25B4A98A3664472B55E17C22DDE58AA89BF38E8B1E8D625CD3C421DF05B361AD  session3b-validated-20260817.zip
 54631589676256AAAB47D395EECA9EC3784068C90DA8A1CEB9545EFBCA61FC96  session3c-validated-20260818.zip
+3E7C11C33AA8C3A5E8696CD8A8A26B6A2B0781E20AC9C606846C8FFDB5F18D72  session4-validated-20260818.zip
 ```

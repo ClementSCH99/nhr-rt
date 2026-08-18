@@ -22,5 +22,9 @@ session2-results/
 session3-results/
 session3b-results/
 session3c-results/
+session4-results/
+cc-results/
 archives/*.zip
 examples/session3_bench.local.json
+examples/session4_*.local.json
+examples/cc_*.local.json

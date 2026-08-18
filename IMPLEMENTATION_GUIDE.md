@@ -117,7 +117,8 @@ façade, l'acquisition, les routines et le service.
   L'horodatage permet de refuser un signal ancien même s'il était sûr.
 - **`RoutineEvent`** et **`RoutineResult`** forment le journal synthétique d'une
   routine. Le CSV contient les mesures détaillées; le résultat contient le
-  déroulement et les erreurs.
+  déroulement et les erreurs. Il conserve aussi le mécanisme de terminaison, le
+  champ, la valeur et la mesure qui a déclenché un seuil.
 
 ### `Measurement.now(...)`
 
@@ -200,8 +201,8 @@ fidèle d'une batterie.
   remplacées pour tester différentes configurations.
 - **`_check()`** reproduit les deux pannes utiles aux tests : une exception
   forcée ou un appel hors connexion.
-- **`connect()`** marque le backend connecté et remet à zéro son origine de
-  temps.
+- **`connect()`** marque le backend connecté et reprend l'intégration depuis la
+  nouvelle origine monotone, sans inventer d'énergie pendant une déconnexion.
 - **`close()`** marque uniquement la session fermée; l'état simulé du module est
   conservé pour tester une reconnexion non destructive.
 
@@ -212,9 +213,10 @@ fidèle d'une batterie.
   défaut.
 - **`read_status()`** reconstruit une photographie depuis l'état interne.
 - **`read_measurement()`** applique un modèle volontairement simple : courant
-  nul hors enable ou hors charge/décharge, petite variation de tension,
-  `P = V × I`, puis intégration idéale des Ah et kWh depuis la connexion. La
-  température varie légèrement avec la magnitude du courant. Le déterminisme
+  nul hors enable ou hors charge/décharge, petite variation de tension et
+  `P = V × I`. Capacité et énergie sont intégrées séparément pour charge et
+  décharge; le compteur concerné repart de zéro lors de l'entrée dans le mode.
+  La température varie légèrement avec la magnitude du courant. Le déterminisme
   rend les tests reproductibles.
 
 ### Écritures simulées
@@ -354,8 +356,8 @@ contrôles locaux avant les écritures.
   indépendamment STANDBY et disable. Les deux opérations sont essayées même si
   la première échoue; une erreur signale ensuite un arrêt incomplet.
 - **`set_watchdog(enabled)`** est un passage explicite vers le backend. Il n'est
-  appelé automatiquement nulle part tant que son comportement réel n'est pas
-  validé.
+  jamais activé implicitement par la façade. Les runners 3C et 4 l'appellent
+  explicitement après leurs validations et le relisent ensuite.
 
 ## 10. `acquisition.py` — mesures, diffusion et CSV
 
@@ -417,9 +419,12 @@ contrôles locaux avant les écritures.
 
 ### Conditions et étapes
 
-- **`Condition.evaluate(measurement)`** sélectionne un champ autorisé puis
-  applique un opérateur dans une table explicite. Un champ optionnel absent ne
-  termine pas la routine. Les noms inconnus sont rejetés.
+- **`Condition.measurement_value(measurement, mode)`** résout la valeur brute.
+  `capacity_ah` et `energy_wh` choisissent automatiquement le compteur charge ou
+  décharge; l'énergie NHR en kWh est convertie en Wh.
+- **`Condition.evaluate(measurement, mode)`** applique ensuite un opérateur dans
+  une table explicite. `relative=True` permet à `WaitStep` de comparer un delta
+  depuis la première mesure active. Les noms inconnus sont rejetés.
 - **`Step.execute()`** définit le contrat commun des étapes.
 - **`ConfigureLimitsStep.execute()`**, **`ArmStep.execute()`**,
   **`MeasureStep.execute()`**, **`SetpointsStep.execute()`**,
@@ -428,10 +433,12 @@ contrôles locaux avant les écritures.
   façade. Cette granularité rend le journal et l'ordre faciles à relire.
 - **`WaitStep.execute()`** boucle jusqu'à la durée ou la condition. À chaque
   passage, elle traite une demande d'arrêt, une panne d'acquisition, les
-  interlocks et une mesure fraîche. `Event.wait()` rend l'attente interrompable.
+  interlocks et une mesure fraîche. Sans condition, la durée est une fin
+  normale; avec condition, atteindre la durée sans atteindre le seuil est un
+  échec. `Event.wait()` rend l'attente interrompable.
 - **`Routine`** est un nom et une séquence immuable d'étapes.
-- **`RoutineContext`** regroupe instrument, acquisition et événement d'arrêt
-  transmis à chaque étape.
+- **`RoutineContext`** regroupe instrument, acquisition, résultat et événement
+  d'arrêt transmis à chaque étape.
 
 ### `RoutineRunner`
 
@@ -453,9 +460,11 @@ contrôles locaux avant les écritures.
 
 ### Construction des routines
 
-- **`constant_current_hold(...)`** fabrique la séquence fixe : limites → armement
-  → mesure fraîche → consignes → enable → attente → standby → disable. Seuls
-  CHARGE et DISCHARGE sont acceptés.
+- **`constant_current_hold(...)`** fabrique la séquence fixe : limites
+  optionnelles → armement → mesure fraîche → consignes → attente → standby →
+  disable. Seuls CHARGE et DISCHARGE sont acceptés. `SetState` dans les consignes
+  est la frontière énergisante observée; aucun `enable` direct redondant n'est
+  ajouté.
 - **`routine_from_mapping(data)`** impose un petit schéma v1. Il refuse les
   champs inconnus, convertit types et état, puis appelle le constructeur CC. Un
   schéma réduit limite les ambiguïtés d'un fichier externe.
@@ -495,6 +504,25 @@ Session 3A soit vérifiable directement dans le code.
   processus qui provoquera la perte.
 - **`restore_safe_state()`** reconnecte au besoin puis remet consignes, sortie
   et watchdog dans leur état sûr.
+
+### `cc_profiles.py` — contrat réutilisable des paliers CC supervisés
+
+- **`CCHoldProfile`** porte mode, consignes, délai maximal, condition, watchdog
+  et approbation propre au palier. Il porte aussi la tolérance de courant, le
+  temps de stabilisation et le nombre minimal d'échantillons qualifiés attendus.
+- **`CCProfileConfiguration`** ajoute informations de banc, identité attendue,
+  limites et tension initiale du simulateur.
+- **`load_cc_profile(path)`** lit le JSON et convertit explicitement le
+  mode et la condition.
+- **`validate_cc_profile(configuration, hardware=...)`** impose les
+  plafonds 5 A, 500 W et 60 secondes, un armement maximal de 70 secondes, la
+  cohérence des limites et le sens de la
+  condition de tension. Sur matériel, il exige watchdog, identité, informations
+  de banc et température UUT ignorée. Une condition température reste réservée
+  à la simulation.
+- **`Condition.measurement_value()`** conserve les champs NHR bruts signés,
+  mais normalise les alias `capacity_ah` et `energy_wh` en magnitude positive.
+  Un seuil relatif `>=` a ainsi la même sémantique en charge et en décharge.
 
 ## 13. `service.py` — propriétaire local du NHR
 
@@ -646,6 +674,20 @@ de l'exécution de l'autre.
 - L'absence d'acquisition continue pendant la coupure est volontaire : aucune
   donnée ne peut être obtenue par la liaison que le test vient de fermer.
 
+### `scripts/supervised_cc_hold.py`
+
+- **`parse_args()`** exige explicitement `--simulate` ou `--hardware`; le mode
+  `--preflight-only` s'arrête avant armement et consigne active.
+- **`main()`** valide le profil avant le backend, vérifie état initial,
+  identité, watchdog et limites relues, puis exécute au plus un palier CC.
+- Le rapport conserve le SHA-256 du profil, le `RoutineResult`, le CSV et les
+  statistiques. `_current_response()` relit les lignes actives du CSV, conserve
+  le transitoire dans le rapport, puis compare chaque courant signé après
+  `current_settling_time_s` à la tolérance approuvée. Le nettoyage tente
+  indépendamment emergency stop, consignes zéro, disable et watchdog false. Une
+  fermeture/reconnexion confirme ensuite état, canaux, consignes et watchdog;
+  tout écart rend le rapport FAIL.
+
 ## 17. Comment les tests prouvent ces intentions
 
 | Fichier | Responsabilité couverte |
@@ -653,6 +695,7 @@ de l'exécution de l'autre.
 | `tests/test_instrument.py` | limites, armement, fraîcheur, interlocks et enable |
 | `tests/test_acquisition_routines.py` | cadence, CSV, routines, arrêts et interlocks runtime |
 | `tests/test_service.py` | API 32/64 bits, SSE, erreurs, port exclusif et shutdown |
+| `tests/test_cc_profiles.py` | profils CC, arrêts durée/V/Ah/Wh/température et runner simulé |
 | `tests/test_safety_validation.py` | Sessions 3A, 3B et réponse watchdog simulée de 3C |
 | `tests/test_public_api.py` | exports publics attendus |
 | `tests/hardware/test_readonly.py` | lectures réelles, opt-in explicite |

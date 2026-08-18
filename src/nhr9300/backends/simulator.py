@@ -48,8 +48,42 @@ class SimulatedBackend:
         self.limits: SafetyLimits | None = None
         self.setpoints = Setpoints()
         self.failure: Exception | None = None
-        self._started = time.monotonic()
+        self._voltage_v = initial_voltage_v
+        self._last_update = time.monotonic()
+        self._capacity_charge_ah = 0.0
+        self._capacity_discharge_ah = 0.0
+        self._energy_charge_kwh = 0.0
+        self._energy_discharge_kwh = 0.0
         self._disconnected_at: float | None = None
+
+    def _active_current(self) -> float:
+        if self.enabled and self.setpoints.state in (
+            OperatingState.CHARGE,
+            OperatingState.DISCHARGE,
+        ):
+            sign = 1.0 if self.setpoints.state == OperatingState.CHARGE else -1.0
+            return sign * self.setpoints.current
+        return 0.0
+
+    def _integrate(self) -> None:
+        now = time.monotonic()
+        elapsed = max(0.0, now - self._last_update)
+        current = self._active_current()
+        power = self._voltage_v * current
+        self._voltage_v += current * 0.005 * elapsed
+        self._capacity_charge_ah += max(current, 0.0) * elapsed / 3_600.0
+        self._capacity_discharge_ah += min(current, 0.0) * elapsed / 3_600.0
+        self._energy_charge_kwh += max(power, 0.0) * elapsed / 3_600_000.0
+        self._energy_discharge_kwh += min(power, 0.0) * elapsed / 3_600_000.0
+        self._last_update = now
+
+    def _reset_counter_for_state(self, state: OperatingState) -> None:
+        if state == OperatingState.CHARGE and self.setpoints.state != state:
+            self._capacity_charge_ah = 0.0
+            self._energy_charge_kwh = 0.0
+        elif state == OperatingState.DISCHARGE and self.setpoints.state != state:
+            self._capacity_discharge_ah = 0.0
+            self._energy_discharge_kwh = 0.0
 
     def _check(self) -> None:
         if self.failure is not None:
@@ -67,9 +101,10 @@ class SimulatedBackend:
             self.setpoints = Setpoints(state=OperatingState.STANDBY)
         self.connected = True
         self._disconnected_at = None
-        self._started = time.monotonic()
+        self._last_update = time.monotonic()
 
     def close(self) -> None:
+        self._integrate()
         self._disconnected_at = time.monotonic()
         self.connected = False
 
@@ -94,26 +129,19 @@ class SimulatedBackend:
 
     def read_measurement(self) -> Measurement:
         self._check()
-        current = 0.0
-        if self.enabled and self.setpoints.state in (
-            OperatingState.CHARGE,
-            OperatingState.DISCHARGE,
-        ):
-            sign = 1.0 if self.setpoints.state == OperatingState.CHARGE else -1.0
-            current = sign * self.setpoints.current
-        elapsed = time.monotonic() - self._started
-        voltage = self.initial_voltage_v + (current * 0.005 * min(elapsed, 10.0))
-        power = voltage * current
+        self._integrate()
+        current = self._active_current()
+        power = self._voltage_v * current
         return Measurement.now(
             self.instrument_id,
             time.monotonic(),
-            voltage,
+            self._voltage_v,
             current,
             power,
-            capacity_charge_ah=max(current, 0.0) * elapsed / 3_600.0,
-            capacity_discharge_ah=max(-current, 0.0) * elapsed / 3_600.0,
-            energy_charge_kwh=max(power, 0.0) * elapsed / 3_600_000.0,
-            energy_discharge_kwh=max(-power, 0.0) * elapsed / 3_600_000.0,
+            capacity_charge_ah=self._capacity_charge_ah,
+            capacity_discharge_ah=self._capacity_discharge_ah,
+            energy_charge_kwh=self._energy_charge_kwh,
+            energy_discharge_kwh=self._energy_discharge_kwh,
             temperature_c=25.0 + abs(current) * 0.002,
         )
 
@@ -144,16 +172,21 @@ class SimulatedBackend:
 
     def configure_setpoints(self, setpoints: Setpoints) -> None:
         self._check()
+        self._integrate()
+        self._reset_counter_for_state(setpoints.state)
         self.setpoints = setpoints
         # Real NHR hardware enables its input when SetState selects a mode.
         self.enabled = setpoints.state != OperatingState.OFF
 
     def set_enabled(self, enabled: bool) -> None:
         self._check()
+        self._integrate()
         self.enabled = enabled
 
     def set_state(self, state: OperatingState) -> None:
         self._check()
+        self._integrate()
+        self._reset_counter_for_state(state)
         self.enabled = state != OperatingState.OFF
         self.setpoints = Setpoints(
             state=state,
