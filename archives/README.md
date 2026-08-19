@@ -3,8 +3,9 @@
 ZIP files are intentionally ignored by Git to keep generated measurements out
 of repository history. Evidence through Session 5 is published in the
 [validation-2026-08-19 GitHub release](https://github.com/ClementSCH99/nhr-rt/releases/tag/validation-2026-08-19).
-The refactor acceptance archive is staged locally for the v0.2.0 release. The
-tracked checksum file allows verification after download.
+The refactor acceptance archive is published with the
+[v0.2.0 release](https://github.com/ClementSCH99/nhr-rt/releases/tag/v0.2.0).
+The tracked checksum file allows verification after download.
 
 | Archive | Retained evidence |
 |---|---|
