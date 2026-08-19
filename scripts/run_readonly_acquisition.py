@@ -1,4 +1,4 @@
-"""Session 2: sustained, strictly read-only validation on a real NHR9300.
+"""Sustained, strictly read-only validation on a real NHR9300.
 
 The object exposed to this script only contains read methods.  This is a
 deliberate second boundary in addition to the non-resetting IVI initialization.
@@ -22,7 +22,7 @@ from nhr9300.types import InstrumentStatus, to_jsonable
 
 
 class ReadOnlyInstrument(Protocol):
-    """The complete instrument API authorized during session 2."""
+    """The complete instrument API authorized by this read-only runner."""
 
     instrument_id: str
 
@@ -34,7 +34,7 @@ class ReadOnlyInstrument(Protocol):
 
 
 def state_signature(status: InstrumentStatus) -> dict[str, object]:
-    """Fields that must not be changed by a read-only session."""
+    """Fields that must not be changed by read-only acquisition."""
     return {
         "enabled": status.enabled,
         "state": status.state,
@@ -93,7 +93,7 @@ def parse_args() -> argparse.Namespace:
         "--rates", type=float, nargs="+", default=[1.0, 5.0, 10.0]
     )
     parser.add_argument("--reconnects", type=int, default=2)
-    parser.add_argument("--output", type=Path, default=Path("session2-results"))
+    parser.add_argument("--output", type=Path, default=Path("readonly-results"))
     return parser.parse_args()
 
 
@@ -180,7 +180,7 @@ def main() -> int:
             json.dumps(to_jsonable(report), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        print(f"Session 2 report: {report_path.resolve()}")
+        print(f"Read-only report: {report_path.resolve()}")
         print(f"Result: {'PASS' if report['passed'] else 'FAIL'}")
 
 

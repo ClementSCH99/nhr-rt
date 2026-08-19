@@ -1,4 +1,4 @@
-"""Session 5 routines: dynamic CSV profiles and independent sequences."""
+"""Dynamic profiles and ordered routine sequences with shared acquisition."""
 
 from __future__ import annotations
 

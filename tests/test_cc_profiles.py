@@ -27,10 +27,62 @@ from nhr9300.routines import (
 )
 from nhr9300.cc_profiles import load_cc_profile, validate_cc_profile
 from nhr9300.types import Measurement, RoutineResult, RoutineState
-from scripts import supervised_cc_hold
+from scripts import run_cc_hold
 
 
-TEMPLATES = sorted(Path("examples").glob("cc_*.example.json"))
+def _cc_profile_data(
+    *,
+    mode: str = "charge",
+    termination: dict | None = None,
+    simulation_only: bool = False,
+) -> dict:
+    current_a = 1.0 if simulation_only else 5.0
+    return {
+        "test_description": "CC profile parser test",
+        "bench_description": "REPLACE_WITH_REVIEWED_BENCH_DESCRIPTION",
+        "stop_procedure": "REPLACE_WITH_REVIEWED_STOP_PROCEDURE",
+        "expected_resource": "DC PM 1",
+        "expected_serial_number": "REPLACE_WITH_EXPECTED_SERIAL_NUMBER",
+        "simulation_initial_voltage_v": 90.0,
+        "review_note": "Test fixture",
+        "safety_limits": {
+            "charge_current": 10.0,
+            "charge_voltage_max": 100.0,
+            "charge_power": 1000.0,
+            "discharge_current": 10.0,
+            "discharge_voltage_min": 75.0,
+            "discharge_power": 1000.0,
+            "current_delay_s": 0.1,
+            "voltage_delay_s": 0.1,
+            "power_delay_s": 0.1,
+            "uut_temperature_max": None,
+            "approved": False,
+            "profile_name": "REPLACE_WITH_APPROVED_LIMITS",
+        },
+        "cc_hold": {
+            "mode": mode,
+            "current_a": current_a,
+            "voltage_v": 75.0 if mode == "discharge" else 100.0,
+            "power_w": 100.0 if simulation_only else 500.0,
+            "max_duration_s": 5.0 if simulation_only else 10.0,
+            "arm_duration_s": 10.0 if simulation_only else 15.0,
+            "current_tolerance_a": 0.5,
+            "current_settling_time_s": 0.0 if simulation_only else 0.5,
+            "minimum_active_samples": 1 if simulation_only else 3,
+            "termination": termination,
+            "watchdog_enabled": not simulation_only,
+            "ignore_uut_temperature": True,
+            "approved": False,
+            "profile_name": "REPLACE_WITH_APPROVED_CC_PROFILE",
+            "simulation_only": simulation_only,
+        },
+    }
+
+
+def _write_cc_profile(tmp_path: Path, **overrides) -> Path:
+    path = tmp_path / "cc-profile.json"
+    path.write_text(json.dumps(_cc_profile_data(**overrides)), encoding="utf-8")
+    return path
 
 
 def limits() -> SafetyLimits:
@@ -74,14 +126,12 @@ def run_condition(tmp_path, mode: OperatingState, condition: Condition):
     return result, status
 
 
-def test_all_cc_templates_are_parseable_and_unapproved() -> None:
-    assert len(TEMPLATES) == 5
-    for path in TEMPLATES:
-        configuration = load_cc_profile(path)
-        assert configuration.safety_limits.approved is False
-        assert configuration.cc_hold.approved is False
-        with pytest.raises(NHRValidationError, match="approved"):
-            validate_cc_profile(configuration, hardware=False)
+def test_cc_profile_loader_rejects_unapproved_profile(tmp_path) -> None:
+    configuration = load_cc_profile(_write_cc_profile(tmp_path))
+    assert configuration.safety_limits.approved is False
+    assert configuration.cc_hold.approved is False
+    with pytest.raises(NHRValidationError, match="approved"):
+        validate_cc_profile(configuration, hardware=False)
 
 
 @pytest.mark.parametrize(
@@ -229,9 +279,18 @@ def test_duration_stop_is_reported_and_direct_enable_is_not_used(tmp_path) -> No
     assert result.reason == "Configured duration elapsed"
 
 
-def test_temperature_profile_is_simulation_only() -> None:
+def test_temperature_profile_is_simulation_only(tmp_path) -> None:
     configuration = load_cc_profile(
-        "examples/cc_temperature_simulation.example.json"
+        _write_cc_profile(
+            tmp_path,
+            termination={
+                "field": "temperature",
+                "operator": ">=",
+                "value": 25.001,
+                "relative": False,
+            },
+            simulation_only=True,
+        )
     )
     approved = replace(
         configuration,
@@ -251,10 +310,8 @@ def test_temperature_profile_is_simulation_only() -> None:
         validate_cc_profile(approved, hardware=True)
 
 
-def test_hardware_profile_requires_watchdog_and_respects_session_caps() -> None:
-    configuration = load_cc_profile(
-        "examples/cc_charge_duration.example.json"
-    )
+def test_hardware_profile_requires_watchdog_and_respects_caps(tmp_path) -> None:
+    configuration = load_cc_profile(_write_cc_profile(tmp_path))
     approved = replace(
         configuration,
         bench_description="Reviewed module bench",
@@ -330,9 +387,7 @@ def test_hardware_profile_requires_watchdog_and_respects_session_caps() -> None:
 def test_current_response_retains_transient_but_evaluates_after_settling(
     tmp_path,
 ) -> None:
-    configuration = load_cc_profile(
-        "examples/cc_charge_duration.example.json"
-    )
+    configuration = load_cc_profile(_write_cc_profile(tmp_path))
     configuration = replace(
         configuration,
         cc_hold=replace(
@@ -363,7 +418,7 @@ def test_current_response_retains_transient_but_evaluates_after_settling(
                 }
             )
 
-    response = supervised_cc_hold._current_response(csv_path, configuration)
+    response = run_cc_hold._current_response(csv_path, configuration)
 
     assert response["passed"] is True
     assert response["active_sample_count"] == 5
@@ -377,10 +432,14 @@ def test_current_response_retains_transient_but_evaluates_after_settling(
 def test_supervised_cc_runner_simulation_writes_safe_report(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    data = json.loads(
-        Path("examples/cc_discharge_energy.example.json").read_text(
-            encoding="utf-8"
-        )
+    data = _cc_profile_data(
+        mode="discharge",
+        termination={
+            "field": "energy_wh",
+            "operator": ">=",
+            "value": 1.0,
+            "relative": True,
+        },
     )
     data["safety_limits"]["approved"] = True
     data["safety_limits"]["profile_name"] = "approved-runner-limits"
@@ -398,7 +457,7 @@ def test_supervised_cc_runner_simulation_writes_safe_report(
         sys,
         "argv",
         [
-            "supervised_cc_hold.py",
+            "run_cc_hold.py",
             "--simulate",
             "--profile",
             str(profile),
@@ -407,7 +466,7 @@ def test_supervised_cc_runner_simulation_writes_safe_report(
         ],
     )
 
-    assert supervised_cc_hold.main() == 0
+    assert run_cc_hold.main() == 0
     reports = list(output.glob("*/report.json"))
     assert len(reports) == 1
     report = json.loads(reports[0].read_text(encoding="utf-8"))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Protocol, Sequence
 
 from .errors import NHRInterlockError
@@ -24,6 +25,30 @@ class StaticInterlockProvider:
 
     def signals(self) -> Sequence[InterlockSignal]:
         return [InterlockSignal(self.name, self.safe, time.monotonic(), self.detail)]
+
+
+class CompositeInterlockProvider:
+    """Combine independent providers without weakening fail-closed validation."""
+
+    def __init__(self, providers: Sequence[InterlockProvider]) -> None:
+        self.providers = tuple(providers)
+
+    def signals(self) -> Sequence[InterlockSignal]:
+        return [signal for provider in self.providers for signal in provider.signals()]
+
+
+class CallbackInterlockProvider:
+    """Adapt an external signal snapshot callback to the interlock protocol.
+
+    The callback owns transport-specific decoding and timestamps. Empty,
+    unsafe, or stale snapshots are rejected later by :func:`validate_interlocks`.
+    """
+
+    def __init__(self, callback: Callable[[], Sequence[InterlockSignal]]) -> None:
+        self.callback = callback
+
+    def signals(self) -> Sequence[InterlockSignal]:
+        return tuple(self.callback())
 
 
 def validate_interlocks(

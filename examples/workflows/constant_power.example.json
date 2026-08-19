@@ -1,0 +1,26 @@
+{
+  "test_description": "Constant-power workflow template",
+  "bench_description": "REPLACE_WITH_REVIEWED_BENCH_DESCRIPTION",
+  "stop_procedure": "REPLACE_WITH_REVIEWED_STOP_PROCEDURE",
+  "expected_resource": "REPLACE_WITH_RESOURCE",
+  "expected_serial_number": "REPLACE_WITH_SERIAL_NUMBER",
+  "simulation_initial_voltage_v": 90.0,
+  "watchdog_enabled": true,
+  "safety_limits": {
+    "charge_current": 5.0, "charge_voltage_max": 100.0, "charge_power": 500.0,
+    "discharge_current": 5.0, "discharge_voltage_min": 80.0, "discharge_power": 500.0,
+    "approved": false, "profile_name": "UNAPPROVED safety limits"
+  },
+  "workflow_limits": {
+    "max_current_a": 3.0, "max_power_w": 250.0,
+    "max_stage_duration_s": 60.0, "max_sequence_duration_s": 60.0,
+    "approved": false, "profile_name": "UNAPPROVED CP workflow"
+  },
+  "stages": [{
+    "name": "constant-power", "type": "constant_power", "duration_s": 30.0,
+    "mode": "discharge", "current_a": 3.0, "voltage_v": 82.0, "power_w": 200.0,
+    "voltage_limit_enabled": true, "current_limit_enabled": true,
+    "power_limit_enabled": true,
+    "termination": {"field": "energy_wh", "operator": ">=", "value": 1.0, "relative": true}
+  }]
+}

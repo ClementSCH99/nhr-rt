@@ -6,13 +6,14 @@ import json
 import sys
 import threading
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from nhr9300 import NHR9300, OperatingState, SafetyLimits, SimulatedBackend, StaticInterlockProvider
 from nhr9300.acquisition import AcquisitionCollector
-from nhr9300.advanced_routines import (
+from nhr9300.sequences import (
     ProfilePoint,
     SequenceRunner,
     SequenceStage,
@@ -29,9 +30,9 @@ from nhr9300.routines import (
     constant_power_hold,
     rest_period,
 )
-from nhr9300.session5_profiles import load_session5_profile, validate_session5_profile
+from nhr9300.profiles import load_workflow_profile, validate_workflow_profile
 from nhr9300.types import Measurement, RoutineResult, RoutineState
-from scripts import supervised_session5
+from nhr9300 import cli, execution
 
 
 def limits() -> SafetyLimits:
@@ -43,11 +44,11 @@ def limits() -> SafetyLimits:
         discharge_voltage_min=80,
         discharge_power=1000,
         approved=True,
-        profile_name="session5-test",
+        profile_name="workflow-test",
     )
 
 
-def setup(tmp_path, name="session5", initial_voltage_v=90.0):
+def setup(tmp_path, name="workflow", initial_voltage_v=90.0):
     instrument = NHR9300(
         name,
         SimulatedBackend(name, initial_voltage_v=initial_voltage_v),
@@ -256,7 +257,7 @@ def test_sequence_stops_in_order_and_aggregates_directional_counters(tmp_path) -
             "charge",
             constant_current_hold(
                 name="charge", limits=limits(), mode=OperatingState.CHARGE,
-                current_a=2, voltage_v=99, power_w=500, duration_s=0.6,
+                    current_a=2, voltage_v=99, power_w=500, duration_s=1.0,
                 arm_duration_s=5,
             ),
             OperatingState.CHARGE,
@@ -266,7 +267,7 @@ def test_sequence_stops_in_order_and_aggregates_directional_counters(tmp_path) -
             "discharge",
             constant_current_hold(
                 name="discharge", limits=limits(), mode=OperatingState.DISCHARGE,
-                current_a=2, voltage_v=81, power_w=500, duration_s=0.6,
+                    current_a=2, voltage_v=81, power_w=500, duration_s=1.0,
                 arm_duration_s=5, configure_limits=False,
             ),
             OperatingState.DISCHARGE,
@@ -382,7 +383,7 @@ def test_signed_profile_does_not_disable_between_active_directions(tmp_path) -> 
     assert backend.disable_count == 2
 
 
-def test_session5_example_contract_builds_all_stage_types(tmp_path) -> None:
+def test_workflow_contract_builds_all_stage_types(tmp_path) -> None:
     csv_path = tmp_path / "profile.csv"
     csv_path.write_text("time_s,power_w\n0,100\n0.2,-100\n0.4,0\n", encoding="utf-8")
     data = {
@@ -409,12 +410,12 @@ def test_session5_example_contract_builds_all_stage_types(tmp_path) -> None:
             {"name": "csv", "type": "csv_profile", "duration_s": 0.4, "csv_path": "profile.csv", "profile_kind": "power", "current_a": 5, "power_w": 500, "voltage_limit_enabled": True, "current_limit_enabled": True, "power_limit_enabled": True, "charge_voltage_limit_v": 98, "discharge_voltage_limit_v": 82}
         ]
     }
-    path = tmp_path / "session5.json"
+    path = tmp_path / "workflow.json"
     path.write_text(json.dumps(data), encoding="utf-8")
-    configuration = load_session5_profile(path)
+    configuration = load_workflow_profile(path)
 
-    validate_session5_profile(configuration, hardware=False)
-    validate_session5_profile(configuration, hardware=True)
+    validate_workflow_profile(configuration, hardware=False)
+    validate_workflow_profile(configuration, hardware=True)
     sequence = configuration.sequence(configure_limits=True)
     assert [stage.name for stage in sequence] == ["cccv", "rest", "cp", "csv"]
     cccv_wait = next(
@@ -425,14 +426,14 @@ def test_session5_example_contract_builds_all_stage_types(tmp_path) -> None:
 
     bad = replace(configuration, workflow_limits=replace(configuration.workflow_limits, max_current_a=1))
     with pytest.raises(NHRValidationError, match="workflow limits"):
-        validate_session5_profile(bad, hardware=False)
+        validate_workflow_profile(bad, hardware=False)
 
     missing_cutoff = replace(
         configuration,
         stages=(replace(configuration.stages[0], cutoff_current_a=None),)
     )
     with pytest.raises(NHRValidationError, match="cutoff_current_a"):
-        validate_session5_profile(missing_cutoff, hardware=False)
+        validate_workflow_profile(missing_cutoff, hardware=False)
 
     no_limit = replace(
         configuration,
@@ -446,7 +447,7 @@ def test_session5_example_contract_builds_all_stage_types(tmp_path) -> None:
         ),
     )
     with pytest.raises(NHRValidationError, match="at least one operating limit"):
-        validate_session5_profile(no_limit, hardware=False)
+        validate_workflow_profile(no_limit, hardware=False)
 
     cc_without_power_limit = replace(
         configuration,
@@ -459,11 +460,24 @@ def test_session5_example_contract_builds_all_stage_types(tmp_path) -> None:
             ),
         ),
     )
-    validate_session5_profile(cc_without_power_limit, hardware=False)
+    validate_workflow_profile(cc_without_power_limit, hardware=False)
 
 
-def test_supervised_session5_simulation_writes_a_safe_report(tmp_path, monkeypatch) -> None:
-    profile = tmp_path / "session5.json"
+def test_generic_workflow_examples_are_valid_but_unapproved() -> None:
+    for path in Path("examples/workflows").glob("*.example.json"):
+        configuration = load_workflow_profile(path)
+        assert configuration.safety_limits.approved is False
+        assert configuration.workflow_limits.approved is False
+        reviewed = replace(
+            configuration,
+            safety_limits=replace(configuration.safety_limits, approved=True),
+            workflow_limits=replace(configuration.workflow_limits, approved=True),
+        )
+        validate_workflow_profile(reviewed, hardware=False)
+
+
+def test_workflow_cli_simulation_writes_a_safe_report(tmp_path, monkeypatch) -> None:
+    profile = tmp_path / "workflow.json"
     data = {
         "test_description": "runner simulation",
         "bench_description": "reviewed bench",
@@ -489,11 +503,11 @@ def test_supervised_session5_simulation_writes_a_safe_report(tmp_path, monkeypat
     profile.write_text(json.dumps(data), encoding="utf-8")
     output = tmp_path / "results"
     monkeypatch.setattr(sys, "argv", [
-        "supervised_session5.py", "--simulate", "--profile", str(profile),
+        "nhr9300-run", "--simulate", "--profile", str(profile),
         "--output", str(output),
     ])
 
-    assert supervised_session5.main() == 0
+    assert cli.main() == 0
     reports = list(output.glob("*/report.json"))
     assert len(reports) == 1
     report = json.loads(reports[0].read_text(encoding="utf-8"))
@@ -520,7 +534,7 @@ def test_dynamic_profile_evidence_hashes_exact_csv_bytes(tmp_path) -> None:
         )
     )
 
-    evidence = supervised_session5._dynamic_profile_evidence(configuration)
+    evidence = execution._dynamic_profile_evidence(configuration)
 
     assert evidence == [
         {

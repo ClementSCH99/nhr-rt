@@ -16,7 +16,7 @@ from nhr9300 import NHR9300, Setpoints, SimulatedBackend, StaticInterlockProvide
 from nhr9300.acquisition import AcquisitionCollector
 from nhr9300.backends.ivi import IVIBackend
 from nhr9300.routines import RoutineRunner
-from nhr9300.safety_validation import (
+from nhr9300.qualification import (
     require_disabled_inactive,
     require_safe_start,
     safety_limit_mismatches,
@@ -214,7 +214,7 @@ def main() -> int:
 
         collector.add_callback(print_live)
     report: dict[str, Any] = {
-        "workflow": "supervised_cc_hold",
+        "workflow": "constant_current_hold",
         "run_id": run_id,
         "execution": "hardware" if hardware else "simulation",
         "preflight_only": bool(args.preflight_only),

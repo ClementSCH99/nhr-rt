@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import queue
 import statistics
 import threading
@@ -11,10 +10,11 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 from .errors import NHRValidationError
 from .instrument import NHR9300
+from .sinks import CsvMeasurementSink, MeasurementSink
 from .types import InstrumentStatus, Measurement
 
 
@@ -81,6 +81,7 @@ class AcquisitionCollector:
         rate_hz: float = 5.0,
         csv_path: Path | None = None,
         status_refresh_interval_s: float = 1.0,
+        sinks: Sequence[MeasurementSink] = (),
     ) -> None:
         if not 1.0 <= rate_hz <= 10.0:
             raise NHRValidationError("Acquisition rate must be between 1 and 10 Hz")
@@ -93,6 +94,7 @@ class AcquisitionCollector:
         self.csv_path = self._unique_csv_path() if self._csv_template else None
         self._has_started = False
         self.status_refresh_interval_s = status_refresh_interval_s
+        self._external_sinks = list(sinks)
         self.latest: AcquisitionSample | None = None
         self._subscribers: list[queue.Queue[AcquisitionSample]] = []
         self._subscribers_lock = threading.Lock()
@@ -292,14 +294,12 @@ class AcquisitionCollector:
 
     def _run(self) -> None:
         period = 1.0 / self.rate_hz
-        handle = None
-        writer = None
+        active_sinks = list(self._external_sinks)
         try:
             if self.csv_path is not None:
-                self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-                handle = self.csv_path.open("w", newline="", encoding="utf-8")
-                writer = csv.DictWriter(handle, fieldnames=self.CSV_FIELDS)
-                writer.writeheader()
+                active_sinks.insert(0, CsvMeasurementSink(self.csv_path))
+            for sink in active_sinks:
+                sink.open(self.CSV_FIELDS)
             deadline = time.monotonic()
             while not self._stop.is_set():
                 try:
@@ -314,9 +314,10 @@ class AcquisitionCollector:
                         if self._first_sample_at is None:
                             self._first_sample_at = measurement.timestamp_utc
                         self._sample_times.append(measurement.monotonic_s)
-                    if writer is not None:
-                        writer.writerow(self._row(sample))
-                        handle.flush()
+                    if active_sinks:
+                        row = self._row(sample)
+                        for sink in active_sinks:
+                            sink.write(row)
                 except Exception as exc:
                     self.error = str(exc)
                     if self.instrument.may_be_energized:
@@ -335,5 +336,5 @@ class AcquisitionCollector:
         finally:
             with self._statistics_lock:
                 self._stopped_monotonic = time.monotonic()
-            if handle is not None:
-                handle.close()
+            for sink in reversed(active_sinks):
+                sink.close()

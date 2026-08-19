@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nhr9300"
-version = "0.1.0"
+version = "0.2.0"
 description = "Safe, typed Python driver and test runner for NH Research NHR9300 cyclers"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -23,6 +23,7 @@ test = [
 
 [project.scripts]
 nhr9300-service = "nhr9300.service:main"
+nhr9300-run = "nhr9300.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

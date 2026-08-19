@@ -15,10 +15,10 @@ from nhr9300 import (
 )
 from nhr9300.errors import NHRStateError, NHRValidationError
 from nhr9300.types import InterlockSignal
-from nhr9300.safety_validation import (
+from nhr9300.qualification import (
     LowSetpointValidator,
-    PhaseBProfile,
-    PhaseCProfile,
+    LowSetpointProfile,
+    WatchdogLossProfile,
     SafetyPrimitiveValidator,
     WatchdogLossValidator,
     require_disabled_inactive,
@@ -35,18 +35,18 @@ def approved_limits() -> SafetyLimits:
         discharge_voltage_min=280.0,
         discharge_power=500.0,
         approved=True,
-        profile_name="session3-test",
+        profile_name="qualification-test",
     )
 
 
-def test_phase_a_finishes_disabled_without_enabling_output() -> None:
+def test_safety_primitives_finish_disabled_without_enabling_output() -> None:
     backend = SimulatedBackend("sim")
     instrument = NHR9300(
         "sim", backend, interlocks=[StaticInterlockProvider(safe=True)]
     )
 
     with instrument:
-        results = SafetyPrimitiveValidator(instrument).run_phase_a(
+        results = SafetyPrimitiveValidator(instrument).run_safety_primitives(
             approved_limits()
         )
         status = instrument.read_status()
@@ -73,7 +73,7 @@ def test_phase_a_finishes_disabled_without_enabling_output() -> None:
     ) == []
 
 
-def test_phase_a_refuses_an_initially_enabled_module() -> None:
+def test_safety_primitives_refuse_an_initially_enabled_module() -> None:
     backend = SimulatedBackend("sim")
     backend.enabled = True
     instrument = NHR9300(
@@ -82,12 +82,12 @@ def test_phase_a_refuses_an_initially_enabled_module() -> None:
 
     with instrument:
         with pytest.raises(NHRStateError, match="Enabled=False"):
-            SafetyPrimitiveValidator(instrument).run_phase_a(approved_limits())
+            SafetyPrimitiveValidator(instrument).run_safety_primitives(approved_limits())
 
     assert backend.enabled is True
 
 
-def test_phase_a_refuses_an_active_initial_state() -> None:
+def test_safety_primitives_refuse_an_active_initial_state() -> None:
     backend = SimulatedBackend("sim")
     backend.setpoints = Setpoints(state=OperatingState.DISCHARGE)
     instrument = NHR9300(
@@ -96,7 +96,7 @@ def test_phase_a_refuses_an_active_initial_state() -> None:
 
     with instrument:
         with pytest.raises(NHRStateError, match="OFF or STANDBY"):
-            SafetyPrimitiveValidator(instrument).run_phase_a(approved_limits())
+            SafetyPrimitiveValidator(instrument).run_safety_primitives(approved_limits())
 
 
 def test_disabled_inactive_accepts_real_hardware_off_state() -> None:
@@ -127,7 +127,7 @@ def test_limit_verification_reports_a_readback_difference() -> None:
     ]
 
 
-def phase_b_profile(**changes: object) -> PhaseBProfile:
+def low_setpoint_profile(**changes: object) -> LowSetpointProfile:
     values = {
         "mode": OperatingState.DISCHARGE,
         "current_a": 0.5,
@@ -136,13 +136,13 @@ def phase_b_profile(**changes: object) -> PhaseBProfile:
         "duration_s": 0.1,
         "arm_duration_s": 5.0,
         "approved": True,
-        "profile_name": "session3b-test",
+        "profile_name": "low-setpoint-test",
     }
     values.update(changes)
-    return PhaseBProfile(**values)
+    return LowSetpointProfile(**values)
 
 
-def test_phase_b_treats_setstate_as_activation_and_cleans_up() -> None:
+def test_low_setpoint_treats_setstate_as_activation_and_cleans_up() -> None:
     backend = SimulatedBackend("sim", initial_voltage_v=350.0)
     instrument = NHR9300(
         "sim", backend, interlocks=[StaticInterlockProvider(safe=True)]
@@ -150,7 +150,7 @@ def test_phase_b_treats_setstate_as_activation_and_cleans_up() -> None:
 
     with instrument:
         result = LowSetpointValidator(instrument).run(
-            phase_b_profile(), approved_limits()
+            low_setpoint_profile(), approved_limits()
         )
 
     assert result.active_status.enabled is True
@@ -166,7 +166,7 @@ def test_phase_b_treats_setstate_as_activation_and_cleans_up() -> None:
     assert instrument.may_be_energized is False
 
 
-def test_phase_b_never_calls_direct_enable() -> None:
+def test_low_setpoint_never_calls_direct_enable() -> None:
     class RejectDirectEnableBackend(SimulatedBackend):
         def set_enabled(self, enabled: bool) -> None:
             if enabled:
@@ -181,13 +181,13 @@ def test_phase_b_never_calls_direct_enable() -> None:
 
     with instrument:
         result = LowSetpointValidator(instrument).run(
-            phase_b_profile(), approved_limits()
+            low_setpoint_profile(), approved_limits()
         )
 
     assert result.final_status.enabled is False
 
 
-def test_phase_b_interlock_failure_disables_output() -> None:
+def test_low_setpoint_interlock_failure_disables_output() -> None:
     class FailingRuntimeInterlock:
         def __init__(self) -> None:
             self.calls = 0
@@ -210,7 +210,7 @@ def test_phase_b_interlock_failure_disables_output() -> None:
     with instrument:
         with pytest.raises(Exception, match="runtime-test"):
             LowSetpointValidator(instrument).run(
-                phase_b_profile(), approved_limits()
+                low_setpoint_profile(), approved_limits()
             )
         final_status = instrument.read_status()
 
@@ -228,7 +228,7 @@ def test_phase_b_interlock_failure_disables_output() -> None:
         ({"arm_duration_s": 2.0}, "2 s of margin"),
     ],
 )
-def test_phase_b_rejects_profiles_outside_its_narrow_scope(
+def test_low_setpoint_rejects_profiles_outside_its_narrow_scope(
     changes: dict[str, object],
     message: str,
 ) -> None:
@@ -241,11 +241,11 @@ def test_phase_b_rejects_profiles_outside_its_narrow_scope(
     with instrument:
         with pytest.raises(NHRValidationError, match=message):
             LowSetpointValidator(instrument).run(
-                phase_b_profile(**changes), approved_limits()
+                low_setpoint_profile(**changes), approved_limits()
             )
 
 
-def test_phase_b_voltage_precheck_cleans_up_and_clears_arm() -> None:
+def test_low_setpoint_voltage_precheck_cleans_up_and_clears_arm() -> None:
     backend = SimulatedBackend("sim", initial_voltage_v=500.0)
     instrument = NHR9300(
         "sim", backend, interlocks=[StaticInterlockProvider(safe=True)]
@@ -254,7 +254,7 @@ def test_phase_b_voltage_precheck_cleans_up_and_clears_arm() -> None:
     with instrument:
         with pytest.raises(NHRStateError, match="outside"):
             LowSetpointValidator(instrument).run(
-                phase_b_profile(), approved_limits()
+                low_setpoint_profile(), approved_limits()
             )
         final_status = instrument.read_status()
 
@@ -262,7 +262,7 @@ def test_phase_b_voltage_precheck_cleans_up_and_clears_arm() -> None:
     assert final_status.armed_until_monotonic is None
 
 
-def phase_c_profile(**changes: object) -> PhaseCProfile:
+def watchdog_loss_profile(**changes: object) -> WatchdogLossProfile:
     values = {
         "mode": OperatingState.DISCHARGE,
         "current_a": 0.5,
@@ -272,13 +272,13 @@ def phase_c_profile(**changes: object) -> PhaseCProfile:
         "disconnect_duration_s": 0.25,
         "arm_duration_s": 5.0,
         "approved": True,
-        "profile_name": "session3c-test",
+        "profile_name": "watchdog-loss-test",
     }
     values.update(changes)
-    return PhaseCProfile(**values)
+    return WatchdogLossProfile(**values)
 
 
-def test_phase_c_observes_watchdog_trip_and_restores_safe_state() -> None:
+def test_watchdog_loss_observes_trip_and_restores_safe_state() -> None:
     backend = SimulatedBackend(
         "sim", initial_voltage_v=350.0, watchdog_timeout_s=0.05
     )
@@ -288,7 +288,7 @@ def test_phase_c_observes_watchdog_trip_and_restores_safe_state() -> None:
 
     with instrument:
         result = WatchdogLossValidator(instrument).run(
-            phase_c_profile(), approved_limits()
+            watchdog_loss_profile(), approved_limits()
         )
 
     assert result.watchdog_before is False
@@ -302,7 +302,7 @@ def test_phase_c_observes_watchdog_trip_and_restores_safe_state() -> None:
     assert backend.watchdog_enabled is False
 
 
-def test_phase_c_active_evidence_exists_before_connection_loss() -> None:
+def test_watchdog_loss_active_evidence_exists_before_connection_loss() -> None:
     backend = SimulatedBackend("sim", initial_voltage_v=350.0)
     instrument = NHR9300(
         "sim", backend, interlocks=[StaticInterlockProvider(safe=True)]
@@ -310,7 +310,7 @@ def test_phase_c_active_evidence_exists_before_connection_loss() -> None:
 
     with instrument:
         validator = WatchdogLossValidator(instrument)
-        active = validator.prepare_active(phase_c_profile(), approved_limits())
+        active = validator.prepare_active(watchdog_loss_profile(), approved_limits())
         assert active.watchdog_enabled_readback is True
         assert active.active_status.enabled is True
         assert active.observed_current_delta_a == pytest.approx(-0.5)
@@ -320,7 +320,7 @@ def test_phase_c_active_evidence_exists_before_connection_loss() -> None:
     assert backend.watchdog_enabled is False
 
 
-def test_phase_c_fails_if_output_is_still_active_after_reconnect() -> None:
+def test_watchdog_loss_fails_if_output_is_still_active_after_reconnect() -> None:
     backend = SimulatedBackend(
         "sim", initial_voltage_v=350.0, watchdog_timeout_s=60.0
     )
@@ -331,7 +331,7 @@ def test_phase_c_fails_if_output_is_still_active_after_reconnect() -> None:
     with instrument:
         with pytest.raises(NHRStateError, match="Expected OFF or STANDBY"):
             WatchdogLossValidator(instrument).run(
-                phase_c_profile(), approved_limits()
+                watchdog_loss_profile(), approved_limits()
             )
         final_status = instrument.read_status()
 
@@ -340,14 +340,14 @@ def test_phase_c_fails_if_output_is_still_active_after_reconnect() -> None:
     assert backend.watchdog_enabled is False
 
 
-def test_phase_c_rejects_long_communication_gap() -> None:
+def test_watchdog_loss_rejects_long_communication_gap() -> None:
     with pytest.raises(NHRValidationError, match="between 0.25 and 10 s"):
         WatchdogLossValidator.validate_profile(
-            phase_c_profile(disconnect_duration_s=10.1), approved_limits()
+            watchdog_loss_profile(disconnect_duration_s=10.1), approved_limits()
         )
 
 
-def test_phase_c_does_not_disable_a_preexisting_watchdog() -> None:
+def test_watchdog_loss_does_not_disable_a_preexisting_watchdog() -> None:
     backend = SimulatedBackend("sim", initial_voltage_v=350.0)
     backend.watchdog_enabled = True
     instrument = NHR9300(
@@ -357,7 +357,7 @@ def test_phase_c_does_not_disable_a_preexisting_watchdog() -> None:
     with instrument:
         with pytest.raises(NHRStateError, match="disabled initially"):
             WatchdogLossValidator(instrument).run(
-                phase_c_profile(), approved_limits()
+                watchdog_loss_profile(), approved_limits()
             )
 
     assert backend.watchdog_enabled is True

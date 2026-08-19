@@ -1,4 +1,4 @@
-"""Validated JSON contract for supervised Session 5 workflows."""
+"""Validated JSON contracts for reusable supervised NHR workflows."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from .advanced_routines import (
+from .sequences import (
     SequenceStage,
     dynamic_profile_routine,
     load_profile_csv,
@@ -58,7 +58,7 @@ class StageProfile:
 
 
 @dataclass(frozen=True, slots=True)
-class Session5Configuration:
+class WorkflowConfiguration:
     test_description: str
     bench_description: str
     stop_procedure: str
@@ -171,9 +171,9 @@ def _required_bool(value: Any, name: str) -> bool:
     return value
 
 
-def load_session5_profile(path: str | Path) -> Session5Configuration:
+def load_workflow_profile(path: str | Path) -> WorkflowConfiguration:
     source = Path(path).resolve()
-    root = _mapping(json.loads(source.read_text(encoding="utf-8")), "Session 5 profile")
+    root = _mapping(json.loads(source.read_text(encoding="utf-8")), "workflow profile")
     allowed_root = {
         "test_description", "bench_description", "stop_procedure",
         "expected_resource", "expected_serial_number", "simulation_initial_voltage_v",
@@ -181,7 +181,7 @@ def load_session5_profile(path: str | Path) -> Session5Configuration:
     }
     unknown_root = set(root) - allowed_root
     if unknown_root:
-        raise NHRValidationError(f"Unknown Session 5 profile fields: {sorted(unknown_root)}")
+        raise NHRValidationError(f"Unknown workflow profile fields: {sorted(unknown_root)}")
     limits = SafetyLimits(**_mapping(root.get("safety_limits"), "safety_limits"))
     workflow = WorkflowLimits(**_mapping(root.get("workflow_limits"), "workflow_limits"))
     raw_stages = root.get("stages")
@@ -212,7 +212,7 @@ def load_session5_profile(path: str | Path) -> Session5Configuration:
         except TypeError as exc:
             raise NHRValidationError(f"Invalid stages[{index}]: {exc}") from exc
     try:
-        return Session5Configuration(
+        return WorkflowConfiguration(
             test_description=str(root.get("test_description", "")),
             bench_description=str(root.get("bench_description", "")),
             stop_procedure=str(root.get("stop_procedure", "")),
@@ -226,10 +226,10 @@ def load_session5_profile(path: str | Path) -> Session5Configuration:
             source_path=source,
         )
     except (TypeError, ValueError) as exc:
-        raise NHRValidationError(f"Invalid Session 5 profile: {exc}") from exc
+        raise NHRValidationError(f"Invalid workflow profile: {exc}") from exc
 
 
-def validate_session5_profile(configuration: Session5Configuration, *, hardware: bool) -> None:
+def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware: bool) -> None:
     limits = configuration.safety_limits
     workflow = configuration.workflow_limits
     if not limits.approved or not limits.profile_name.strip():
@@ -410,7 +410,7 @@ def validate_session5_profile(configuration: Session5Configuration, *, hardware:
 
     if hardware:
         if not configuration.watchdog_enabled:
-            raise NHRValidationError("The Session 5 hardware runner requires the watchdog")
+            raise NHRValidationError("The hardware workflow runner requires the watchdog")
         required = {
             "bench_description": configuration.bench_description,
             "stop_procedure": configuration.stop_procedure,

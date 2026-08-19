@@ -16,6 +16,23 @@ from nhr9300.routines import RoutineRunner, constant_current_hold, load_yaml
 from nhr9300.types import RoutineState
 
 
+class MemorySink:
+    def __init__(self) -> None:
+        self.fields = []
+        self.rows = []
+        self.closed = False
+
+    def open(self, fields) -> None:
+        self.fields = list(fields)
+        self.closed = False
+
+    def write(self, row) -> None:
+        self.rows.append(dict(row))
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def limits() -> SafetyLimits:
     return SafetyLimits(
         charge_current=5,
@@ -99,8 +116,29 @@ def test_two_independent_routines_run_concurrently(tmp_path) -> None:
     assert all(result.state == RoutineState.PASSED for result in results)
 
 
-def test_example_yaml_is_safe_by_default() -> None:
-    loaded = load_yaml("examples/cc_hold.example.yaml")
+def test_yaml_loader_preserves_unapproved_limits(tmp_path) -> None:
+    profile = tmp_path / "routine.yaml"
+    profile.write_text(
+        """
+name: loader-test
+mode: charge
+current_a: 1.0
+voltage_v: 100.0
+power_w: 100.0
+duration_s: 1.0
+limits:
+  charge_current: 1.0
+  charge_voltage_max: 100.0
+  charge_power: 100.0
+  discharge_current: 1.0
+  discharge_voltage_min: 75.0
+  discharge_power: 100.0
+  approved: false
+  profile_name: example-only
+""".strip(),
+        encoding="utf-8",
+    )
+    loaded = load_yaml(profile)
     assert loaded.name
     assert loaded.steps[0].limits.approved is False
 
@@ -126,6 +164,21 @@ def test_acquisition_reports_csv_and_timing_quality(tmp_path) -> None:
     assert "capacity_discharge_ah" in rows[0]
     assert rows[0]["capacity_charge_ah"] != ""
     assert rows[0]["capacity_discharge_ah"] != ""
+
+
+def test_acquisition_can_publish_to_an_additional_sink(tmp_path) -> None:
+    instrument, _ = setup(tmp_path, "sink")
+    sink = MemorySink()
+    collector = AcquisitionCollector(instrument, rate_hz=10, sinks=[sink])
+    collector.start()
+    time.sleep(0.25)
+    collector.stop()
+    instrument.close()
+
+    assert len(sink.rows) >= 2
+    assert sink.closed is True
+    assert "timestamp_utc" in sink.fields
+    assert all(row["instrument_id"] == "sink" for row in sink.rows)
 
 
 def test_simulated_acquisition_supports_1_5_and_10_hz(tmp_path) -> None:

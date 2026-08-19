@@ -1,4 +1,4 @@
-"""Small, observable checks used during Session 3 bench validation."""
+"""Observable qualification checks for safety writes and watchdog behavior."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class PrimitiveResult:
 
 
 @dataclass(frozen=True, slots=True)
-class PhaseBProfile:
+class LowSetpointProfile:
     """Deliberately narrow profile for the first energized transition."""
 
     mode: OperatingState
@@ -47,7 +47,7 @@ class PhaseBProfile:
 
 
 @dataclass(frozen=True, slots=True)
-class PhaseBResult:
+class LowSetpointResult:
     initial_measurement: Measurement
     active_status: InstrumentStatus
     active_measurements: tuple[Measurement, ...]
@@ -57,7 +57,7 @@ class PhaseBResult:
 
 
 @dataclass(frozen=True, slots=True)
-class PhaseCProfile:
+class WatchdogLossProfile:
     """Profile for one supervised watchdog communication-loss test."""
 
     mode: OperatingState
@@ -72,7 +72,7 @@ class PhaseCProfile:
 
 
 @dataclass(frozen=True, slots=True)
-class PhaseCActiveResult:
+class WatchdogActiveResult:
     """Evidence captured immediately before communication is interrupted."""
 
     initial_status: InstrumentStatus
@@ -87,7 +87,7 @@ class PhaseCActiveResult:
 
 
 @dataclass(frozen=True, slots=True)
-class PhaseCResult:
+class WatchdogLossResult:
     initial_status: InstrumentStatus
     initial_measurement: Measurement
     safety_limits_readback: SafetyLimitsReadback
@@ -110,11 +110,11 @@ def require_safe_start(status: InstrumentStatus) -> None:
     """Refuse validation if the bench is already enabled or in an active mode."""
     if status.enabled:
         raise NHRStateError(
-            "Session 3 requires Enabled=False before its first write"
+            "Safety qualification requires Enabled=False before its first write"
         )
     if status.state not in (OperatingState.OFF, OperatingState.STANDBY):
         raise NHRStateError(
-            f"Session 3 requires OFF or STANDBY, observed {status.state.name}"
+            f"Safety qualification requires OFF or STANDBY, observed {status.state.name}"
         )
 
 
@@ -205,7 +205,7 @@ def safety_limit_mismatches(
 
 
 class SafetyPrimitiveValidator:
-    """Run Session 3A writes one at a time and verify each observed result."""
+    """Run non-energizing safety writes one at a time and verify readback."""
 
     def __init__(self, instrument: NHR9300) -> None:
         self.instrument = instrument
@@ -224,7 +224,7 @@ class SafetyPrimitiveValidator:
         check(after)
         return PrimitiveResult(name, started, ended, before, after)
 
-    def run_phase_a(self, limits: SafetyLimits) -> list[PrimitiveResult]:
+    def run_safety_primitives(self, limits: SafetyLimits) -> list[PrimitiveResult]:
         """Validate only non-energizing primitives; never call enable()."""
         require_safe_start(self.instrument.read_status())
         results = [
@@ -288,41 +288,41 @@ class LowSetpointValidator:
 
     @staticmethod
     def validate_profile(
-        profile: PhaseBProfile,
+        profile: LowSetpointProfile,
         limits: SafetyLimits,
         *,
-        phase_name: str = "Phase 3B",
+        qualification_name: str = "Low-setpoint qualification",
     ) -> None:
         if not profile.approved or not profile.profile_name.strip():
             raise NHRValidationError(
-                f"{phase_name} requires its own approved, named profile"
+                f"{qualification_name} requires its own approved, named profile"
             )
         if profile.mode not in (
             OperatingState.CHARGE,
             OperatingState.DISCHARGE,
         ):
             raise NHRValidationError(
-                f"{phase_name} mode must be CHARGE or DISCHARGE"
+                f"{qualification_name} mode must be CHARGE or DISCHARGE"
             )
         if not 0.0 < profile.current_a <= LowSetpointValidator.MAX_CURRENT_A:
             raise NHRValidationError(
-                f"{phase_name} current must be > 0 and <= 1 A"
+                f"{qualification_name} current must be > 0 and <= 1 A"
             )
         if not 0.0 < profile.power_w <= LowSetpointValidator.MAX_POWER_W:
             raise NHRValidationError(
-                f"{phase_name} power must be > 0 and <= 100 W"
+                f"{qualification_name} power must be > 0 and <= 100 W"
             )
         if not 0.0 < profile.duration_s <= LowSetpointValidator.MAX_DURATION_S:
             raise NHRValidationError(
-                f"{phase_name} duration must be > 0 and <= 2 s"
+                f"{qualification_name} duration must be > 0 and <= 2 s"
             )
         if not 1.0 <= profile.arm_duration_s <= 30.0:
             raise NHRValidationError(
-                f"{phase_name} arm duration must be between 1 and 30 s"
+                f"{qualification_name} arm duration must be between 1 and 30 s"
             )
         if profile.arm_duration_s < profile.duration_s + 2.0:
             raise NHRValidationError(
-                f"{phase_name} arm duration requires at least 2 s of margin"
+                f"{qualification_name} arm duration requires at least 2 s of margin"
             )
         if not (
             limits.discharge_voltage_min
@@ -330,7 +330,7 @@ class LowSetpointValidator:
             <= limits.charge_voltage_max
         ):
             raise NHRValidationError(
-                f"{phase_name} voltage must remain inside the approved battery window"
+                f"{qualification_name} voltage must remain inside the approved battery window"
             )
         mode_current_limit = (
             limits.charge_current
@@ -344,20 +344,20 @@ class LowSetpointValidator:
         )
         if profile.current_a > mode_current_limit:
             raise NHRValidationError(
-                f"{phase_name} current exceeds approved limits"
+                f"{qualification_name} current exceeds approved limits"
             )
         if profile.power_w > mode_power_limit:
             raise NHRValidationError(
-                f"{phase_name} power exceeds approved limits"
+                f"{qualification_name} power exceeds approved limits"
             )
 
     def run(
         self,
-        profile: PhaseBProfile,
+        profile: LowSetpointProfile,
         limits: SafetyLimits,
         *,
         poll_interval_s: float = 0.05,
-    ) -> PhaseBResult:
+    ) -> LowSetpointResult:
         self.validate_profile(profile, limits)
         require_safe_start(self.instrument.read_status())
         samples: list[Measurement] = []
@@ -419,7 +419,7 @@ class LowSetpointValidator:
         require_disabled_inactive(final_status)
         if initial is None or active_status is None:
             raise NHRStateError("The active state was not observed")
-        return PhaseBResult(
+        return LowSetpointResult(
             initial_measurement=initial,
             active_status=active_status,
             active_measurements=tuple(samples),
@@ -430,7 +430,7 @@ class LowSetpointValidator:
 
     @staticmethod
     def _validate_current_response(
-        profile: PhaseBProfile | PhaseCProfile,
+        profile: LowSetpointProfile | WatchdogLossProfile,
         initial: Measurement,
         samples: list[Measurement],
     ) -> tuple[float, float]:
@@ -480,10 +480,11 @@ class WatchdogLossValidator:
         self.instrument = instrument
 
     @staticmethod
-    def validate_profile(profile: PhaseCProfile, limits: SafetyLimits) -> None:
-        # Reuse the deliberately conservative electrical bounds from Phase 3B.
+    def validate_profile(profile: WatchdogLossProfile, limits: SafetyLimits) -> None:
+        # Watchdog-loss qualification uses the same conservative electrical
+        # bounds as the directly observed low-setpoint qualification.
         LowSetpointValidator.validate_profile(
-            PhaseBProfile(
+            LowSetpointProfile(
                 mode=profile.mode,
                 current_a=profile.current_a,
                 voltage_v=profile.voltage_v,
@@ -494,7 +495,7 @@ class WatchdogLossValidator:
                 profile_name=profile.profile_name,
             ),
             limits,
-            phase_name="Phase 3C",
+            qualification_name="Watchdog-loss qualification",
         )
         if not (
             WatchdogLossValidator.MIN_DISCONNECT_S
@@ -502,16 +503,16 @@ class WatchdogLossValidator:
             <= WatchdogLossValidator.MAX_DISCONNECT_S
         ):
             raise NHRValidationError(
-                "Phase 3C disconnect duration must be between 0.25 and 10 s"
+                "Watchdog disconnect duration must be between 0.25 and 10 s"
             )
 
     def run(
         self,
-        profile: PhaseCProfile,
+        profile: WatchdogLossProfile,
         limits: SafetyLimits,
         *,
         poll_interval_s: float = 0.05,
-    ) -> PhaseCResult:
+    ) -> WatchdogLossResult:
         active = self.prepare_active(
             profile, limits, poll_interval_s=poll_interval_s
         )
@@ -541,7 +542,7 @@ class WatchdogLossValidator:
             raise NHRStateError("The watchdog remained enabled after cleanup")
         final_status = self.instrument.read_status()
         require_disabled_inactive(final_status)
-        return PhaseCResult(
+        return WatchdogLossResult(
             initial_status=active.initial_status,
             initial_measurement=active.initial_measurement,
             safety_limits_readback=active.safety_limits_readback,
@@ -562,11 +563,11 @@ class WatchdogLossValidator:
 
     def prepare_active(
         self,
-        profile: PhaseCProfile,
+        profile: WatchdogLossProfile,
         limits: SafetyLimits,
         *,
         poll_interval_s: float = 0.05,
-    ) -> PhaseCActiveResult:
+    ) -> WatchdogActiveResult:
         """Reach and verify the low active state, leaving watchdog ownership to caller."""
         self.validate_profile(profile, limits)
         initial_status = self.instrument.read_status()
@@ -586,7 +587,7 @@ class WatchdogLossValidator:
             watchdog_before = self.instrument.read_watchdog()
             if watchdog_before:
                 raise NHRStateError(
-                    "Phase 3C requires the watchdog to be disabled initially"
+                    "Watchdog-loss qualification requires the watchdog disabled initially"
                 )
             self.instrument.set_watchdog(True)
             watchdog_changed = True
@@ -631,7 +632,7 @@ class WatchdogLossValidator:
                     profile, initial_measurement, samples
                 )
             )
-            result = PhaseCActiveResult(
+            result = WatchdogActiveResult(
                 initial_status=initial_status,
                 initial_measurement=initial_measurement,
                 safety_limits_readback=limits_readback,

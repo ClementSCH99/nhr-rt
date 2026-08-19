@@ -5,6 +5,8 @@ import time
 import pytest
 
 from nhr9300 import (
+    CallbackInterlockProvider,
+    CompositeInterlockProvider,
     NHR9300,
     OperatingState,
     SafetyLimits,
@@ -12,6 +14,8 @@ from nhr9300 import (
     SimulatedBackend,
     StaticInterlockProvider,
 )
+from nhr9300.interlocks import validate_interlocks
+from nhr9300.types import InterlockSignal
 from nhr9300.errors import (
     NHRInterlockError,
     NHRNotArmedError,
@@ -126,6 +130,17 @@ def test_interlock_blocks_arm_and_runtime() -> None:
         interlock.safe = False
         with pytest.raises(NHRInterlockError):
             instrument.arm()
+
+
+def test_composite_external_interlocks_fail_closed_when_stale() -> None:
+    now = time.monotonic()
+    external = CallbackInterlockProvider(
+        lambda: [InterlockSignal("bms", True, now - 2.0, "CAN snapshot")]
+    )
+    combined = CompositeInterlockProvider([StaticInterlockProvider(), external])
+
+    with pytest.raises(NHRInterlockError, match="bms"):
+        validate_interlocks([combined], max_age_s=1.0, now=now)
 
 
 def test_arm_expiry_is_enforced() -> None:
