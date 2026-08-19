@@ -1,9 +1,10 @@
 # Validation evidence archives
 
 ZIP files are intentionally ignored by Git to keep generated measurements out
-of repository history. Accepted archives are published as immutable assets in
-the [validation-2026-08-19 GitHub release](https://github.com/ClementSCH99/nhr-rt/releases/tag/validation-2026-08-19).
-The tracked checksum file allows verification after download.
+of repository history. Evidence through Session 5 is published in the
+[validation-2026-08-19 GitHub release](https://github.com/ClementSCH99/nhr-rt/releases/tag/validation-2026-08-19).
+The refactor acceptance archive is staged locally for the v0.2.0 release. The
+tracked checksum file allows verification after download.
 
 | Archive | Retained evidence |
 |---|---|
@@ -14,6 +15,7 @@ The tracked checksum file allows verification after download.
 | `session3c-validated-20260818.zip` | Disabled connection-loss preflight `20260818T175945Z` and final active run `20260818T180011Z` |
 | `session4-validated-20260818.zip` | Full Session 4 chronology: 22 reports, 15 CSV files and five approved local profiles |
 | `session5-validated-20260819.zip` | Full Session 5 chronology, approved profiles, dynamic CSV inputs, reports and measurement CSV files |
+| `refactor-acceptance-20260819.zip` | Final five-stage hardware acceptance of commit `1a08bc6`, including approved inputs, global/per-stage CSVs, report and operator-confirmed summary |
 
 Failed, superseded and empty runs are normally not archived. Session 4 is kept
 as a complete exception because its diagnostic runs document the current
@@ -32,4 +34,5 @@ C08C7B42B86251F0385D1219819506331A144050595E64A27088048870D083AC  documentation-
 54631589676256AAAB47D395EECA9EC3784068C90DA8A1CEB9545EFBCA61FC96  session3c-validated-20260818.zip
 3E7C11C33AA8C3A5E8696CD8A8A26B6A2B0781E20AC9C606846C8FFDB5F18D72  session4-validated-20260818.zip
 01C42FD119DB72B67C8F89AD1F24236D878832132CE817CB3FCAABE28B810178  session5-validated-20260819.zip
+8925C8C158CD499022B14509D990B7D8B137EEDB95F5A68A12684254079FD3CB  refactor-acceptance-20260819.zip
 ```

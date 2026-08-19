@@ -24,6 +24,20 @@ disconnect completed successfully.
 The active-zero residual documented in `SAFETY.md` is a known hardware behavior,
 not a precise electrical zero guarantee.
 
+## Final refactor acceptance — 2026-08-19
+
+Commit `1a08bc6` was exercised on NHR serial `79503` with an approved five-stage
+workflow: CCCV charge, rest, CP discharge, rest and signed power CSV. All stages
+passed. CCCV stopped at 4.4950 A after CV activation, CP stopped at 88.7995 V,
+and the dynamic profile reached its end. The global acquisition contains 1,226
+samples over 122.578 s at 9.9988 Hz.
+
+Cleanup and a separate-process reconnect both confirmed output off, watchdog
+off, all channels disabled and all setpoint values zero. The operator confirmed
+correct behavior with no abnormal observation. At the requested active 0 W
+point, the measured residual was 35.3–40.4 W, within the already documented
+active-zero behavior.
+
 ## Evidence registry
 
 `archives/README.md` records immutable archive names and SHA-256 values. Raw
