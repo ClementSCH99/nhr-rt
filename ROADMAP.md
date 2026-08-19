@@ -123,12 +123,62 @@ les résultats sont archivés dans
 
 ## Session 5 — Intégration et routines avancées
 
-Objectif : rendre le pilote utile aux premiers outils métier.
+Objectif recentré : livrer un outil supervisé couvrant la majorité des
+routines de cyclage nécessaires avant la prochaine phase d'expansion.
 
-- Valider le service avec un vrai NHR depuis un client 64 bits.
-- Ajouter les routines prioritaires : CC-CV, repos et profils multi-paliers.
-- Définir l’adaptateur d’interlocks CAN/BMS et la politique de données périmées.
-- Tester plusieurs sessions NHR indépendantes.
+- Charge et décharge CCCV avec arrêt par magnitude de courant.
+- Charge et décharge à puissance constante avec arrêt par tension, durée,
+  capacité ou énergie.
+- Repos mesuré et sortie désactivée.
+- Séquences de routines indépendantes, arrêt au premier échec, acquisition CSV
+  globale, CSV dérivé par étape et bilans directionnels Ah/Wh.
+- Profils CSV signés de courant ou puissance, incluant charge, décharge et
+  zéro, avec limites opérationnelles explicites.
+- Runner unique avec simulation, prévol, acquittement matériel, rapport JSON,
+  CSV par étape, nettoyage et reconnexion indépendante.
+
+État au 2026-08-19 : implémentation et validation logicielle terminées. La
+suite compte 78 tests réussis et 2 tests matériels ignorés. Le second CCCV
+charge réel du 2026-08-19 a terminé PASS à un cutoff de 4,494 A, avec nettoyage
+et reconnexion sûre. Le cutoff est maintenant verrouillé jusqu'à l'entrée en
+CV; sa prochaine validation réelle sera combinée à une séquence CCCV, repos et
+décharge CP. Le contrat, la matrice de validation et l'ordre des essais sont
+dans [SESSION5.md](SESSION5.md).
+
+Cette séquence combinée a ensuite terminé PASS : verrouillage CCCV observé,
+repos OFF pendant 10 s, décharge stable à -400 W jusqu'à 88,80 V, CSV global et
+trois CSV d'étape, puis état OFF confirmé par reconnexion. Les prochains essais
+doivent compléter les critères CP restants et les profils CSV dynamiques.
+
+Les critères CP capacité et énergie ont ensuite passé dans une séquence courte
+à +400 W puis -400 W. Avec l'arrêt tension précédent, la validation matérielle
+CP prioritaire est complète. Le prochain palier combine un CSV unidirectionnel,
+un repos et un CSV bidirectionnel.
+
+Ce dernier palier a terminé PASS avec un profil courant unidirectionnel, un
+repos de 10 s et un profil puissance bidirectionnel. Les fins CSV, les passages
+par zéro, les changements de sens, le CSV global, les CSV par étape et le retour
+sûr ont été observés. Les routines prioritaires de Session 5 sont donc
+fonctionnellement validées; il reste le nettoyage, l'archivage des preuves et la
+revue finale avant fermeture formelle.
+
+Après retour opérateur, les zéros CSV ont été modifiés pour conserver le mode
+actif et programmer seulement 0 A ou 0 W. La répétition matérielle a confirmé
+l'absence de transition OFF dans les CSV, puis le retour sûr final. Une étape
+`rest` reste la commande explicite pour ouvrir la sortie entre deux profils.
+
+Le passage OFF auparavant imposé à chaque changement de signe a également été
+retiré. Les transitions actives charge/décharge sont maintenant directes; les
+tests logiciels, le profil complet simulé et la répétition réelle passent. Le
+CSV réel confirme l'absence d'état OFF/standby durant la transition et
+l'opérateur confirme l'absence de claquement. Le zéro actif conserve cependant
+un résidu mesuré asymétrique, jusqu'à environ +0,47 A / +42 W pendant cet essai;
+une étape `rest` reste nécessaire lorsqu'un vrai zéro électrique est requis.
+
+La Session 5 sera fermée après validation progressive des profils réels,
+revue du logging final et nettoyage documentaire. L'adaptateur CAN/BMS, le
+service de commande 64 bits et l'interface graphique deviennent les premières
+extensions de la roadmap suivante plutôt que des dépendances de cette session.
 
 La synchronisation de groupe, l’acquisition waveform haute fréquence et une
 interface graphique restent hors scope tant qu’un besoin concret ne les

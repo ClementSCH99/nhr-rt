@@ -361,16 +361,84 @@ Le contrat historique, les résultats et les corrections issues du banc sont
 dans [archives/SESSION4.md](archives/SESSION4.md). Les preuves complètes sont
 conservées localement dans `archives/session4-validated-20260818.zip`.
 
+## Workflows supervisés Session 5
+
+`scripts/supervised_session5.py` exécute une séquence JSON validée. Les types
+d'étapes sont `constant_current`, `cccv`, `constant_power`, `rest` et
+`csv_profile`. Chaque étape reste une routine indépendante avec son propre
+`RoutineResult` et son propre CSV. Une acquisition globale unique reste active
+pendant toute la séquence et produit aussi un CSV global; les CSV d'étape sont
+ensuite extraits de cette même source sans doubler les lectures IVI. La séquence
+s'arrête au premier échec et rapporte séparément charge, décharge, Ah et Wh;
+elle ne remplace jamais les compteurs NHR bruts.
+
+Les `safety_limits` globales sont toujours programmées et relues : elles ne
+peuvent pas être ignorées par une routine. Les champs
+`voltage_limit_enabled`, `current_limit_enabled` et `power_limit_enabled`
+contrôlent uniquement les canaux actifs de la routine. Au moins un doit être
+actif et le validateur impose en plus :
+
+- CC : courant et limite de tension obligatoires; puissance optionnelle;
+- CCCV : courant, tension et `cutoff_current_a` obligatoires; puissance
+  optionnelle;
+- CP : puissance et limite de tension obligatoires; courant optionnel;
+- CSV courant : courant et limites de tension obligatoires; puissance
+  optionnelle;
+- CSV puissance : puissance et limites de tension obligatoires; courant
+  optionnel.
+
+Le CSV dynamique contient exactement `time_s,current_a` ou `time_s,power_w`.
+Les valeurs sont signées : positives en charge et négatives en décharge. Après
+le premier point actif, zéro conserve le sens courant et les contacteurs, mais
+programme la consigne primaire à 0 A ou 0 W. Un zéro initial reste OFF. Utiliser
+une vraie étape `rest` lorsqu'une sortie désactivée ou un vrai zéro électrique
+est requis : le NHR peut conserver un courant résiduel avec les contacteurs
+fermés malgré une consigne active nulle. Un changement
+de signe commande directement le nouvel état actif charge/décharge sans passage
+logiciel par OFF; les limites directionnelles sont reprogrammées avec la
+consigne. La première ligne doit commencer à 0 s, les temps sont strictement
+croissants et la dernière ligne marque la fin. Le profil JSON impose en plus des
+limites opérationnelles de courant, puissance, durée d'étape et durée totale.
+
+Le template
+[session5_workflow.example.json](examples/session5_workflow.example.json) est
+volontairement non approuvé. Pour simuler une copie revue :
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path .\src).Path
+.\.venv32\Scripts\python.exe .\scripts\supervised_session5.py `
+  --simulate --profile .\examples\session5_workflow.local.json
+```
+
+Le prévol matériel programme et relit uniquement les limites; il n'arme pas et
+n'applique aucune consigne active :
+
+```powershell
+$env:NHR9300_RESOURCE = "DC PM 1"
+$env:NHR9300_SESSION5_ACK = "SUPERVISED_SESSION5_READY"
+.\.venv32\Scripts\python.exe .\scripts\supervised_session5.py `
+  --hardware --preflight-only `
+  --profile .\examples\session5_workflow.local.json
+```
+
+Retirer `--preflight-only` peut faire circuler de l'énergie. Cette commande est
+réservée à un profil réel approuvé, un opérateur présent et un arrêt d'urgence
+accessible. Voir [SESSION5.md](SESSION5.md) pour l'ordre de validation.
+
 ## Routines
 
 [cc_hold.example.yaml](examples/cc_hold.example.yaml) montre le schéma YAML v1.
 Son profil porte volontairement `approved: false` et ne peut donc pas activer
 un instrument sans modification consciente.
 
-Les conditions génériques acceptent `voltage`, `current`, `power`,
+Les conditions génériques acceptent `voltage`, `current`, `current_magnitude`, `power`,
 `capacity_ah`, `energy_wh` ou `temperature` et les opérateurs `<`, `<=`, `>`,
 `>=`, `==`. Une routine retourne un `RoutineResult` avec état, motif précis de
 terminaison, mesure terminale, événements, erreurs et CSV.
+
+Dans un profil Session 5, un CCCV n'utilise pas une condition générique de
+courant : son champ dédié est `cutoff_current_a`, et le résultat rapporte
+`termination_field="cutoff_current"`.
 
 ## Tests
 

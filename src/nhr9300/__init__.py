@@ -8,6 +8,13 @@ from .cc_profiles import (
     load_cc_profile,
     validate_cc_profile,
 )
+from .session5_profiles import (
+    Session5Configuration,
+    StageProfile,
+    WorkflowLimits,
+    load_session5_profile,
+    validate_session5_profile,
+)
 from .instrument import NHR9300
 from .interlocks import InterlockProvider, StaticInterlockProvider
 from .types import (
@@ -35,8 +42,13 @@ __all__ = [
     "SafetyLimits",
     "SafetyLimitsReadback",
     "Setpoints",
+    "Session5Configuration",
     "SimulatedBackend",
     "StaticInterlockProvider",
+    "StageProfile",
+    "WorkflowLimits",
     "load_cc_profile",
+    "load_session5_profile",
     "validate_cc_profile",
+    "validate_session5_profile",
 ]

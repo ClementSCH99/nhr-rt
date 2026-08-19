@@ -1,0 +1,74 @@
+{
+  "test_description": "PROPOSED Session 5 - CP charge capacity and CP discharge energy",
+  "bench_description": "P32B - 613 ; Module tests",
+  "stop_procedure": "Press the accessible NHR emergency shutdown",
+  "expected_resource": "DC PM 1",
+  "expected_serial_number": "79503",
+  "simulation_initial_voltage_v": 88.80,
+  "watchdog_enabled": true,
+  "safety_limits": {
+    "charge_current": 10.0,
+    "charge_voltage_max": 100.0,
+    "charge_power": 1000.0,
+    "discharge_current": 10.0,
+    "discharge_voltage_min": 80.0,
+    "discharge_power": 1000.0,
+    "current_delay_s": 0.1,
+    "voltage_delay_s": 0.1,
+    "power_delay_s": 0.1,
+    "uut_temperature_max": null,
+    "approved": false,
+    "profile_name": "UNAPPROVED - replace with reviewed safety limits"
+  },
+  "workflow_limits": {
+    "max_current_a": 5.0,
+    "max_power_w": 500.0,
+    "max_stage_duration_s": 60.0,
+    "max_sequence_duration_s": 130.0,
+    "approved": false,
+    "profile_name": "PROPOSED - Session 5 CP Capacity-Energy"
+  },
+  "stages": [
+    {
+      "name": "charge-constant-power-capacity",
+      "type": "constant_power",
+      "duration_s": 60.0,
+      "mode": "charge",
+      "current_a": 5.0,
+      "voltage_v": 100.0,
+      "power_w": 400.0,
+      "voltage_limit_enabled": true,
+      "current_limit_enabled": true,
+      "power_limit_enabled": true,
+      "termination": {
+        "field": "capacity_ah",
+        "operator": ">=",
+        "value": 0.02,
+        "relative": true
+      }
+    },
+    {
+      "name": "rest-between-cp",
+      "type": "rest",
+      "duration_s": 5.0
+    },
+    {
+      "name": "discharge-constant-power-energy",
+      "type": "constant_power",
+      "duration_s": 60.0,
+      "mode": "discharge",
+      "current_a": 5.0,
+      "voltage_v": 80.0,
+      "power_w": 400.0,
+      "voltage_limit_enabled": true,
+      "current_limit_enabled": true,
+      "power_limit_enabled": true,
+      "termination": {
+        "field": "energy_wh",
+        "operator": ">=",
+        "value": 2.0,
+        "relative": true
+      }
+    }
+  ]
+}

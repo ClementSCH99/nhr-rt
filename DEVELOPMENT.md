@@ -132,6 +132,50 @@ Ordre de revue conseillé pour le changement final :
 3. relire `scripts/supervised_cc_hold.py` et ses chemins de nettoyage;
 4. copier et compléter les templates retenus avant la simulation commune.
 
+## Changements en cours — Session 5
+
+**Base de comparaison :** base Session 4 acceptée, avant commit Session 5.
+
+- `advanced_routines.py` ajoute puissance constante, profils CSV signés et
+  séquences indépendantes avec bilans Ah/Wh directionnels.
+- `session5_profiles.py` charge un contrat JSON strict et vérifie approbations,
+  limites de séquence, limites de banc, fichiers CSV et conditions d'arrêt.
+- le simulateur distingue régulation primaire courant/puissance et reproduit
+  un passage CC→CV déterministe sans changer les régressions Session 3/4;
+- `supervised_session5.py` fournit simulation, prévol, exécution, preuve et
+  nettoyage avec reconnexion indépendante;
+- `tests/test_session5_routines.py` couvre les deux sens CCCV/CP, les quatre
+  familles d'arrêt CP, le repos, les séquences, les profils CSV et le runner.
+- La revue utilisateur ajoute des canaux opérationnels optionnels avec règles
+  par routine, renomme le critère CCCV en cutoff current et produit une seule
+  acquisition globale ensuite divisée en CSV d'étape.
+- Le cutoff CCCV reste maintenant verrouillé jusqu'au franchissement de la
+  tension CV, afin qu'un courant faible pendant la montée ne puisse pas arrêter
+  la routine avant la phase CV.
+- Le runner ajoute au rapport le chemin, la taille et le SHA-256 de chaque CSV
+  dynamique et vérifie que le fichier ne change pas pendant son chargement.
+- Un point CSV à zéro conserve le dernier mode actif et programme 0 A ou 0 W;
+  un changement de signe commande directement le nouvel état actif sans OFF
+  intermédiaire. Une étape `rest`, une fin de routine ou le nettoyage impose
+  toujours la désactivation de la sortie.
+
+### État de validation
+
+| Contrôle | État |
+|---|---|
+| Tests Session 5 ciblés | 20 réussis — 2026-08-19 |
+| Suite logicielle complète | 78 réussis, 2 matériels ignorés |
+| Simulation runner avec rapport et reconnexion | Réussie |
+| Connexion réelle non énergisante Session 5 | PASS |
+| CCCV charge réel | PASS — cutoff 4,494 A; nettoyage PASS — `20260819T160245Z` |
+| Puissance constante réelle | Charge/décharge 400 W PASS; arrêts tension, capacité et énergie — `20260819T162627Z`, `20260819T163723Z` |
+| Séquence réelle | CCCV → repos 10 s → CP PASS; CSV global + 3 CSV d'étape — `20260819T162627Z` |
+| Profil CSV réel | Profils PASS; zéro sans OFF et changement de signe direct validés, sans claquement observé; résidu zéro actif documenté jusqu'à environ +0,47 A / +42 W — `20260819T164823Z`, `20260819T174723Z`, `20260819T175949Z` |
+
+La Session 5 n'est donc pas encore acceptée matériellement. Suivre les portes
+et l'ordre de test de `SESSION5.md`; ne pas convertir les tests simulateur en
+preuve de comportement IVI ou électrique.
+
 ## Règles de mise à jour de ce document
 
 - Décrire le comportement et la raison du changement, pas chaque ligne modifiée.

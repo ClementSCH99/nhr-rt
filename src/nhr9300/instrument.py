@@ -216,6 +216,8 @@ class NHR9300:
     def _validate_setpoints(self, setpoints: Setpoints) -> None:
         if self._limits is None:
             raise NHRValidationError("Configure approved safety limits first")
+        if setpoints.control_mode not in {"current", "power"}:
+            raise NHRValidationError("control_mode must be current or power")
         limits = self._limits
         if setpoints.current < 0 or setpoints.power < 0 or setpoints.voltage < 0:
             raise NHRValidationError("Setpoint magnitudes cannot be negative")
@@ -266,6 +268,20 @@ class NHR9300:
                 "Cannot arm while the module is enabled; explicitly disable it first"
             )
         validate_interlocks(self._interlocks, self._interlock_max_age_s)
+        self._armed_until = time.monotonic() + duration_s
+        return self._armed_until
+
+    def renew_arm(self, duration_s: float = 30.0) -> float:
+        """Extend an active software arm lease after fresh safety checks.
+
+        This does not write to the backend. It exists for bounded long profiles
+        whose control loop is still healthy and continuously observed.
+        """
+        self._require_connected()
+        self._require_arm()
+        self._require_fresh_measurement()
+        if not 1.0 <= duration_s <= 300.0:
+            raise NHRValidationError("Arm duration must be between 1 and 300 seconds")
         self._armed_until = time.monotonic() + duration_s
         return self._armed_until
 

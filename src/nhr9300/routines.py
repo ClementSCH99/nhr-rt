@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,7 +40,10 @@ class Condition:
         fields = {
             "voltage": measurement.voltage_v,
             "current": measurement.current_a,
+            "current_magnitude": abs(measurement.current_a),
+            "cutoff_current": abs(measurement.current_a),
             "power": measurement.power_w,
+            "power_magnitude": abs(measurement.power_w),
             "temperature": measurement.temperature_c,
             "capacity_charge_ah": measurement.capacity_charge_ah,
             "capacity_discharge_ah": measurement.capacity_discharge_ah,
@@ -146,13 +150,20 @@ class WaitStep(Step):
     condition: Condition | None = None
     poll_interval_s: float = 0.1
     mode: OperatingState | None = None
+    activation_condition: Condition | None = None
+    activation_tolerance: float = 0.0
     name = "wait"
 
     def execute(self, context: RoutineContext) -> None:
         if self.duration_s <= 0:
             raise NHRValidationError("Wait duration must be positive")
+        if self.activation_tolerance < 0.0:
+            raise NHRValidationError("Activation tolerance cannot be negative")
         deadline = time.monotonic() + self.duration_s
         baseline: float | None = None
+        latest_measurement: Measurement | None = None
+        latest_compared: float | None = None
+        condition_active = self.activation_condition is None
         while True:
             if context.stop_event.is_set():
                 raise InterruptedError("Routine stop requested")
@@ -160,6 +171,27 @@ class WaitStep(Step):
                 raise NHRRoutineError(context.collector.error)
             context.instrument.check_interlocks()
             measurement = context.instrument.read_measurement()
+            latest_measurement = measurement
+            if self.mode in (OperatingState.CHARGE, OperatingState.DISCHARGE):
+                if context.result.initial_active_measurement is None:
+                    context.result.initial_active_measurement = measurement
+            if not condition_active and self.activation_condition is not None:
+                activation_value = self.activation_condition.measurement_value(
+                    measurement, self.mode
+                )
+                if activation_value is None:
+                    raise NHRRoutineError(
+                        "Termination activation field "
+                        f"{self.activation_condition.field!r} is unavailable"
+                    )
+                condition_active = self.activation_condition.evaluate_value(
+                    activation_value
+                ) or math.isclose(
+                    activation_value,
+                    self.activation_condition.value,
+                    rel_tol=0.0,
+                    abs_tol=self.activation_tolerance,
+                )
             if self.condition:
                 actual = self.condition.measurement_value(measurement, self.mode)
                 if actual is None:
@@ -172,7 +204,8 @@ class WaitStep(Step):
                     compared = actual - baseline
                 else:
                     compared = actual
-                if self.condition.evaluate_value(compared):
+                latest_compared = compared
+                if condition_active and self.condition.evaluate_value(compared):
                     context.result.termination_reason = "condition"
                     context.result.termination_field = self.condition.field
                     context.result.termination_value = compared
@@ -186,11 +219,15 @@ class WaitStep(Step):
         if self.condition is not None:
             context.result.termination_reason = "condition_timeout"
             context.result.termination_field = self.condition.field
+            context.result.termination_value = latest_compared
+            context.result.termination_baseline = baseline
+            context.result.termination_measurement = latest_measurement
             raise NHRRoutineError(
                 f"Termination condition {self.condition.field!r} was not reached "
                 f"within {self.duration_s:.3f} s"
             )
         context.result.termination_reason = "duration"
+        context.result.termination_measurement = latest_measurement
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,9 +261,16 @@ class RoutineContext:
 
 
 class RoutineRunner:
-    def __init__(self, instrument: NHR9300, collector: AcquisitionCollector) -> None:
+    def __init__(
+        self,
+        instrument: NHR9300,
+        collector: AcquisitionCollector,
+        *,
+        manage_collector: bool = True,
+    ) -> None:
         self.instrument = instrument
         self.collector = collector
+        self.manage_collector = manage_collector
         self.result: RoutineResult | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -238,6 +282,8 @@ class RoutineRunner:
     def start(self, routine: Routine) -> RoutineResult:
         if self.running:
             raise NHRRoutineError("A routine is already running")
+        if not self.manage_collector and not self.collector.running:
+            raise NHRRoutineError("An externally managed collector must be running")
         result = RoutineResult(routine_id=str(uuid.uuid4()))
         self.result = result
         self._stop.clear()
@@ -273,7 +319,8 @@ class RoutineRunner:
     def _execute(self, routine: Routine, result: RoutineResult) -> None:
         result.state = RoutineState.RUNNING
         result.started_at = datetime.now(timezone.utc)
-        self.collector.start()
+        if self.manage_collector:
+            self.collector.start()
         result.csv_path = (
             str(self.collector.csv_path) if self.collector.csv_path is not None else None
         )
@@ -311,7 +358,8 @@ class RoutineRunner:
                 except Exception as exc:
                     result.errors.append(f"Emergency stop failed: {exc!r}")
             self.collector.set_context(result.routine_id, "finished")
-            self.collector.stop()
+            if self.manage_collector:
+                self.collector.stop()
             result.ended_at = datetime.now(timezone.utc)
 
 
@@ -326,7 +374,11 @@ def constant_current_hold(
     duration_s: float,
     arm_duration_s: float = 30.0,
     termination: Condition | None = None,
+    termination_activation: Condition | None = None,
+    termination_activation_tolerance: float = 0.0,
     configure_limits: bool = True,
+    voltage_limit_enabled: bool = True,
+    power_limit_enabled: bool = True,
 ) -> Routine:
     if mode not in (OperatingState.CHARGE, OperatingState.DISCHARGE):
         raise NHRValidationError("CC hold mode must be CHARGE or DISCHARGE")
@@ -343,14 +395,21 @@ def constant_current_hold(
                     voltage=voltage_v,
                     current=current_a,
                     power=power_w,
-                    voltage_enabled=True,
+                    voltage_enabled=voltage_limit_enabled,
                     current_enabled=True,
-                    power_enabled=True,
+                    power_enabled=power_limit_enabled,
+                    control_mode="current",
                 )
             ),
             # SetState(CHARGE/DISCHARGE) is the observed energizing boundary on
             # real hardware; a second direct enable is neither required nor safer.
-            WaitStep(duration_s, termination, mode=mode),
+            WaitStep(
+                duration_s,
+                termination,
+                mode=mode,
+                activation_condition=termination_activation,
+                activation_tolerance=termination_activation_tolerance,
+            ),
             StandbyStep(),
             DisableStep(),
         )
@@ -358,6 +417,59 @@ def constant_current_hold(
     return Routine(
         name=name,
         steps=tuple(steps),
+    )
+
+
+def constant_power_hold(
+    *,
+    name: str,
+    limits: SafetyLimits,
+    mode: OperatingState,
+    power_w: float,
+    voltage_limit_v: float,
+    current_limit_a: float,
+    duration_s: float,
+    arm_duration_s: float = 30.0,
+    termination: Condition | None = None,
+    configure_limits: bool = True,
+    voltage_limit_enabled: bool = True,
+    current_limit_enabled: bool = True,
+) -> Routine:
+    """Build a constant-power hold with current and voltage guard channels."""
+    if mode not in (OperatingState.CHARGE, OperatingState.DISCHARGE):
+        raise NHRValidationError("CP hold mode must be CHARGE or DISCHARGE")
+    steps: list[Step] = []
+    if configure_limits:
+        steps.append(ConfigureLimitsStep(limits))
+    steps.extend(
+        (
+            ArmStep(arm_duration_s),
+            MeasureStep(),
+            SetpointsStep(
+                Setpoints(
+                    state=mode,
+                    voltage=voltage_limit_v,
+                    current=current_limit_a,
+                    power=power_w,
+                    voltage_enabled=voltage_limit_enabled,
+                    current_enabled=current_limit_enabled,
+                    power_enabled=True,
+                    control_mode="power",
+                )
+            ),
+            WaitStep(duration_s, termination, mode=mode),
+            StandbyStep(),
+            DisableStep(),
+        )
+    )
+    return Routine(name=name, steps=tuple(steps))
+
+
+def rest_period(*, name: str, duration_s: float) -> Routine:
+    """Build an inactive, measured rest that always starts from disabled output."""
+    return Routine(
+        name=name,
+        steps=(DisableStep(), WaitStep(duration_s)),
     )
 
 

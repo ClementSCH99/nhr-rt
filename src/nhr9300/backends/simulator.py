@@ -62,7 +62,29 @@ class SimulatedBackend:
             OperatingState.DISCHARGE,
         ):
             sign = 1.0 if self.setpoints.state == OperatingState.CHARGE else -1.0
-            return sign * self.setpoints.current
+            candidates: list[float] = []
+            if self.setpoints.control_mode == "power":
+                if self.setpoints.power_enabled and self._voltage_v > 0.0:
+                    candidates.append(self.setpoints.power / self._voltage_v)
+                if self.setpoints.current_enabled:
+                    candidates.append(self.setpoints.current)
+            elif self.setpoints.current_enabled:
+                candidates.append(self.setpoints.current)
+            if not candidates:
+                return 0.0
+            magnitude = min(candidates)
+
+            # The real NHR applies all enabled regulation channels together.
+            # This small deterministic taper models the CC-to-CV transition and
+            # the equivalent discharge voltage floor without pretending to be a
+            # battery model.
+            if self.setpoints.voltage_enabled:
+                if self.setpoints.state == OperatingState.CHARGE:
+                    headroom = self.setpoints.voltage - self._voltage_v
+                else:
+                    headroom = self._voltage_v - self.setpoints.voltage
+                magnitude = min(magnitude, max(0.0, headroom * 50.0))
+            return sign * magnitude
         return 0.0
 
     def _integrate(self) -> None:
@@ -202,6 +224,7 @@ class SimulatedBackend:
             current_slew_rate=self.setpoints.current_slew_rate,
             power_slew_rate=self.setpoints.power_slew_rate,
             resistance_slew_rate=self.setpoints.resistance_slew_rate,
+            control_mode=self.setpoints.control_mode,
         )
 
     def set_watchdog(self, enabled: bool) -> None:

@@ -696,6 +696,7 @@ de l'exécution de l'autre.
 | `tests/test_acquisition_routines.py` | cadence, CSV, routines, arrêts et interlocks runtime |
 | `tests/test_service.py` | API 32/64 bits, SSE, erreurs, port exclusif et shutdown |
 | `tests/test_cc_profiles.py` | profils CC, arrêts durée/V/Ah/Wh/température et runner simulé |
+| `tests/test_session5_routines.py` | CCCV/CP, repos, séquences, profils CSV et runner Session 5 |
 | `tests/test_safety_validation.py` | Sessions 3A, 3B et réponse watchdog simulée de 3C |
 | `tests/test_public_api.py` | exports publics attendus |
 | `tests/hardware/test_readonly.py` | lectures réelles, opt-in explicite |
@@ -720,3 +721,46 @@ Pour comprendre le projet sans tout lire d'un coup :
 Quand l'implémentation d'un module change, ce guide doit être mis à jour dans la
 même phase. La section *Changements en cours* de `DEVELOPMENT.md` indique alors
 rapidement quelles parties de ce guide doivent être relues.
+
+## 19. Routines avancées Session 5
+
+### `advanced_routines.py`
+
+- **`constant_current_hold()`** utilise le courant comme régulation primaire,
+  exige la limite de tension dans le contrat Session 5 et rend la limite de
+  puissance optionnelle.
+- **`constant_power_hold()`** utilise le canal puissance comme régulation
+  primaire; la tension reste obligatoire et le canal courant est optionnel.
+- **`rest_period()`** impose `STANDBY`, puis `Enabled=False`, tout en conservant
+  une acquisition mesurée pendant l'attente.
+- **`load_profile_csv()`** accepte un seul axe signé (`current_a` ou `power_w`)
+  et rejette colonnes inattendues, temps non croissants et valeurs non finies.
+- **`DynamicProfileStep.execute()`** applique chaque point à l'horloge monotone,
+  traite le zéro comme repos, réarme après un changement de sens et rafraîchit le
+  contexte du collecteur à chaque ligne. Un arrêt demandé, un interlock unsafe
+  ou une erreur d'acquisition interrompt immédiatement le profil.
+- **`SequenceRunner.run()`** démarre un seul collecteur global, exécute un
+  `RoutineRunner` sans propriété du collecteur pour chaque étape et ne lance
+  jamais l'étape suivante après un échec. Après l'arrêt du collecteur, il filtre
+  le CSV global par `routine_id` pour créer un CSV par étape. Les bilans
+  directionnels additionnent ensuite les incréments des compteurs bruts;
+  ceux-ci restent la preuve primaire.
+
+### `session5_profiles.py`
+
+- **`load_session5_profile()`** résout les CSV relativement au JSON et rejette
+  les champs racine inconnus.
+- **`validate_session5_profile()`** vérifie l'approbation des limites de sécurité
+  et opérationnelles, la durée, les plafonds courant/puissance, la fenêtre de
+  tension, les canaux de limite requis selon CC/CCCV/CP/CSV, le cutoff current
+  CCCV, les conditions d'arrêt et les métadonnées obligatoires du banc. Les
+  limites de sécurité globales ne sont jamais désactivables.
+- **`Session5Configuration.sequence()`** traduit le profil validé en routines
+  sans déplacer les commandes hors de la façade `NHR9300`.
+
+### Renouvellement d'armement
+
+`NHR9300.renew_arm()` prolonge uniquement le bail logiciel. Il n'écrit aucune
+commande backend et exige que le bail courant, les interlocks et la dernière
+mesure soient encore valides. Il sert aux profils dynamiques longs; une routine
+statique reste bornée à 295 secondes par étape.

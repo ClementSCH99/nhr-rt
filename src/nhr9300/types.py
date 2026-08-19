@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, IntEnum
+from pathlib import Path
 from typing import Any
 
 
@@ -97,6 +98,7 @@ class Setpoints:
     current_slew_rate: float | None = None
     power_slew_rate: float | None = None
     resistance_slew_rate: float | None = None
+    control_mode: str = "current"
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +175,7 @@ class RoutineResult:
     termination_field: str | None = None
     termination_value: float | None = None
     termination_baseline: float | None = None
+    initial_active_measurement: Measurement | None = None
     termination_measurement: Measurement | None = None
     events: list[RoutineEvent] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -182,6 +185,8 @@ def to_jsonable(value: Any) -> Any:
     """Convert public dataclasses/enums/datetimes into JSON-compatible values."""
     if isinstance(value, datetime):
         return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
     if isinstance(value, Enum):
         return value.value
     if hasattr(value, "__dataclass_fields__"):
