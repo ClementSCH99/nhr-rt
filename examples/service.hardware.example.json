@@ -6,7 +6,8 @@
       "backend": "ivi",
       "logical_name": "DC PM 1",
       "rate_hz": 10,
-      "operator_supervised": false
+      "operator_supervised": false,
+      "primitive_compatibility_control": false
     }
   ]
 }

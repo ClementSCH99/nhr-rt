@@ -102,6 +102,11 @@ class NHR9300:
         if not self._connected:
             raise NHRConnectionError(f"{self.instrument_id} is not connected")
 
+    @property
+    def connected(self) -> bool:
+        """Return service-owned connection state without touching the backend."""
+        return self._connected
+
     def connect(self) -> NHR9300:
         with self._lock:
             if self._connected:

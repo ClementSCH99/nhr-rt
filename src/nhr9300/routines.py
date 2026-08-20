@@ -313,6 +313,14 @@ class RoutineRunner:
         except Exception:
             pass
 
+    def wait(self, timeout: float | None = None) -> bool:
+        """Wait for the active routine and report whether it terminated."""
+        thread = self._thread
+        if thread is None:
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
+
     def _event(self, result: RoutineResult, step: str, message: str) -> None:
         result.events.append(RoutineEvent(datetime.now(timezone.utc), step, message))
 

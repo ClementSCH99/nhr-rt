@@ -8,7 +8,8 @@ import logging
 import queue
 import threading
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,7 +19,7 @@ from urllib.parse import urlparse
 from .acquisition import AcquisitionCollector
 from .backends.ivi import DEFAULT_DRIVER_DLL, IVIBackend
 from .backends.simulator import SimulatedBackend
-from .errors import NHRError, NHRStateError, NHRValidationError
+from .errors import NHRError, NHRPolicyError, NHRStateError, NHRValidationError
 from .instrument import NHR9300
 from .interlocks import StaticInterlockProvider
 from .routines import RoutineRunner, routine_from_mapping
@@ -33,12 +34,145 @@ class LocalThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = False
 
 
+class EndpointClass(str, Enum):
+    """Authority classes frozen by the v1 service contract."""
+
+    READ_ONLY = "read_only"
+    APPROVED_WORKFLOW_CONTROL = "approved_workflow_control"
+    PRIMITIVE_COMPATIBILITY_CONTROL = "primitive_compatibility_control"
+
+
+READ_ONLY_ACTIONS = {
+    "inventory",
+    "configuration",
+    "status",
+    "measurement",
+    "routine",
+    "acquisition",
+    "stream",
+}
+PRIMITIVE_ACTIONS = {
+    "connect",
+    "disconnect",
+    "limits",
+    "arm",
+    "command",
+    "routine",
+    "stop",
+}
+PHYSICAL_PRIMITIVES_DISABLED_BY_DEFAULT = {
+    "limits",
+    "arm",
+    "command",
+    "routine",
+    "stop",
+}
+
+
+def classify_endpoint(method: str, action: str) -> EndpointClass:
+    """Return the authority class for an established v0.2.0 endpoint."""
+    normalized_method = method.upper()
+    if normalized_method == "GET" and action in READ_ONLY_ACTIONS:
+        return EndpointClass.READ_ONLY
+    if normalized_method == "POST" and action in PRIMITIVE_ACTIONS:
+        return EndpointClass.PRIMITIVE_COMPATIBILITY_CONTROL
+    raise NHRValidationError(
+        f"Unclassified service endpoint: {normalized_method} {action}"
+    )
+
+
 @dataclass(slots=True)
 class ManagedInstrument:
     instrument: NHR9300
     collector: AcquisitionCollector
     runner: RoutineRunner
     backend_name: str
+    primitive_compatibility_control: bool = False
+    shutdown_timeout_s: float = 3.0
+    _lifecycle_lock: threading.RLock = field(
+        default_factory=threading.RLock, repr=False
+    )
+
+    def ensure_running(self) -> Any:
+        """Initialize the service-owned connection and acquisition once."""
+        with self._lifecycle_lock:
+            self.instrument.connect()
+            self.collector.start()
+            return self.instrument.read_status()
+
+    def detach_observer(self) -> dict[str, bool]:
+        """Acknowledge a legacy detach without changing shared resources."""
+        with self._lifecycle_lock:
+            return {
+                "detached": True,
+                "service_connected": self.instrument.connected,
+            }
+
+    def require_allowed(self, action: str) -> None:
+        classification = classify_endpoint("POST", action)
+        if classification != EndpointClass.PRIMITIVE_COMPATIBILITY_CONTROL:
+            return
+        if self.backend_name != "ivi":
+            return
+        if action not in PHYSICAL_PRIMITIVES_DISABLED_BY_DEFAULT:
+            return
+        if self.primitive_compatibility_control:
+            return
+        raise NHRPolicyError(
+            "Primitive compatibility control is disabled for physical "
+            f"instrument {self.instrument.instrument_id}: {action}"
+        )
+
+    def close(self) -> None:
+        """Converge the service-owned runtime on a verified non-active state."""
+        failures: list[str] = []
+        with self._lifecycle_lock:
+            if self.runner.running:
+                self.runner.stop()
+                if not self.runner.wait(self.shutdown_timeout_s):
+                    failures.append(
+                        "active routine did not stop within "
+                        f"{self.shutdown_timeout_s:.1f} s"
+                    )
+
+            if self.instrument.connected:
+                try:
+                    self.instrument.disable()
+                except Exception as exc:
+                    failures.append(f"disable failed: {exc}")
+                try:
+                    self.instrument.set_watchdog(False)
+                except Exception as exc:
+                    failures.append(f"watchdog disable failed: {exc}")
+                try:
+                    status = self.instrument.read_status()
+                    watchdog = self.instrument.read_watchdog()
+                    if status.enabled or status.state not in (
+                        OperatingState.OFF,
+                        OperatingState.STANDBY,
+                    ):
+                        failures.append(
+                            "final status is not disabled OFF/STANDBY"
+                        )
+                    if watchdog:
+                        failures.append("watchdog remained enabled")
+                except Exception as exc:
+                    failures.append(f"final-state verification failed: {exc}")
+
+            try:
+                self.collector.stop(timeout=self.shutdown_timeout_s)
+            except Exception as exc:
+                failures.append(f"acquisition stop failed: {exc}")
+            try:
+                self.instrument.close()
+            except Exception as exc:
+                failures.append(f"instrument close failed: {exc}")
+
+        if failures:
+            raise NHRStateError(
+                f"Shutdown incomplete for {self.instrument.instrument_id}: "
+                + "; ".join(failures)
+            )
 
 
 class InstrumentManager:
@@ -68,6 +202,13 @@ class InstrumentManager:
                 )
             else:
                 raise NHRValidationError(f"Unknown backend: {backend_name}")
+            primitive_control = item.get(
+                "primitive_compatibility_control", False
+            )
+            if not isinstance(primitive_control, bool):
+                raise NHRValidationError(
+                    "primitive_compatibility_control must be a boolean"
+                )
             interlock = StaticInterlockProvider(
                 safe=bool(item.get("operator_supervised", backend_name == "simulator"))
             )
@@ -84,8 +225,9 @@ class InstrumentManager:
             self.instruments[instrument_id] = ManagedInstrument(
                 instrument,
                 collector,
-                RoutineRunner(instrument, collector),
+                RoutineRunner(instrument, collector, manage_collector=False),
                 backend_name,
+                primitive_control,
             )
 
     def get(self, instrument_id: str) -> ManagedInstrument:
@@ -108,11 +250,16 @@ class InstrumentManager:
         return {
             "config_file": str(self.config_path) if self.config_path else None,
             "listen_url": self.listen_url,
+            "api_versions": ["v1"],
+            "legacy_read_routes": True,
             "restart_required_for_config_changes": True,
             "instruments": [
                 {
                     "instrument_id": instrument_id,
                     "backend": managed.backend_name,
+                    "primitive_compatibility_control": (
+                        managed.primitive_compatibility_control
+                    ),
                     "requested_rate_hz": managed.collector.rate_hz,
                     "csv_path": (
                         str(managed.collector.csv_path)
@@ -125,16 +272,23 @@ class InstrumentManager:
         }
 
     def close(self) -> None:
+        failures = []
         for managed in self.instruments.values():
-            if managed.runner.running:
-                managed.runner.stop()
-            managed.collector.stop()
-            managed.instrument.close()
+            try:
+                managed.close()
+            except Exception as exc:
+                LOGGER.exception(
+                    "Instrument shutdown failed: instrument=%s",
+                    managed.instrument.instrument_id,
+                )
+                failures.append(str(exc))
+        if failures:
+            raise NHRStateError("; ".join(failures))
 
 
 class NHRRequestHandler(BaseHTTPRequestHandler):
     manager: InstrumentManager
-    server_version = "NHR9300Service/0.1"
+    server_version = "NHR9300Service/0.2"
     stream_keepalive_interval_s = 10.0
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -159,12 +313,16 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
 
     def _route(self) -> tuple[str | None, str | None]:
         parts = [part for part in urlparse(self.path).path.split("/") if part]
+        if parts[:2] == ["api", "v1"]:
+            parts = parts[2:]
         if len(parts) == 1 and parts[0] == "instruments":
             return None, "inventory"
         if len(parts) == 1 and parts[0] == "configuration":
             return None, "configuration"
-        if len(parts) >= 2 and parts[0] == "instruments":
-            return parts[1], parts[2] if len(parts) > 2 else "status"
+        if len(parts) == 2 and parts[0] == "instruments":
+            return parts[1], "status"
+        if len(parts) == 3 and parts[0] == "instruments":
+            return parts[1], parts[2]
         return None, None
 
     def do_GET(self) -> None:
@@ -180,6 +338,10 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
                 return
             managed = self.manager.get(instrument_id)
+            if action not in READ_ONLY_ACTIONS:
+                self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+                return
+            classify_endpoint("GET", action)
             if action == "status":
                 self._send(HTTPStatus.OK, managed.instrument.read_status())
             elif action == "measurement":
@@ -206,8 +368,7 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
             self._error(exc)
 
     def _stream(self, managed: ManagedInstrument) -> None:
-        if not managed.collector.running:
-            managed.collector.start()
+        managed.ensure_running()
         subscriber = managed.collector.subscribe()
         instrument_id = managed.instrument.instrument_id
         try:
@@ -272,17 +433,15 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
                 return
             managed = self.manager.get(instrument_id)
+            if action not in PRIMITIVE_ACTIONS:
+                self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+                return
+            managed.require_allowed(action)
             body = self._json_body()
             if action == "connect":
-                managed.instrument.connect()
-                managed.collector.start()
-                payload: Any = managed.instrument.read_status()
+                payload: Any = managed.ensure_running()
             elif action == "disconnect":
-                if managed.runner.running:
-                    raise NHRStateError("Stop the active routine before disconnecting")
-                managed.collector.stop()
-                managed.instrument.close()
-                payload = {"connected": False}
+                payload = managed.detach_observer()
             elif action == "limits":
                 managed.instrument.configure_safety_limits(SafetyLimits(**body))
                 payload = {"configured": True}
@@ -329,7 +488,9 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
         return instrument.read_status()
 
     def _error(self, exc: Exception) -> None:
-        if isinstance(exc, (NHRError, ValueError, KeyError, TypeError)):
+        if isinstance(exc, NHRPolicyError):
+            status = HTTPStatus.FORBIDDEN
+        elif isinstance(exc, (NHRError, ValueError, KeyError, TypeError)):
             status = HTTPStatus.BAD_REQUEST
         else:
             status = HTTPStatus.INTERNAL_SERVER_ERROR
@@ -380,8 +541,10 @@ def serve(
         LOGGER.info("Service shutdown requested by operator (Ctrl+C)")
     finally:
         LOGGER.info("Closing NHR9300 service")
-        manager.close()
-        server.server_close()
+        try:
+            manager.close()
+        finally:
+            server.server_close()
         LOGGER.info("NHR9300 service stopped")
 
 

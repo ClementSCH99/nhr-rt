@@ -12,8 +12,17 @@ from .errors import NHRError
 
 
 class NHRServiceClient:
-    def __init__(self, base_url: str = "http://127.0.0.1:9300") -> None:
-        self.base_url = base_url.rstrip("/")
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:9300",
+        *,
+        api_version: str | None = "v1",
+    ) -> None:
+        if api_version not in (None, "v1"):
+            raise ValueError("api_version must be 'v1' or None")
+        root = base_url.rstrip("/")
+        suffix = f"/api/{api_version}" if api_version else ""
+        self.base_url = root if root.endswith(suffix) else root + suffix
 
     def _request(
         self, method: str, path: str, body: Mapping[str, Any] | None = None

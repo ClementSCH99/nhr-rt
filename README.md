@@ -54,7 +54,8 @@ See [Workflow profiles](docs/WORKFLOWS.md) for the complete contract.
 ```
 
 The service listens on `127.0.0.1:9300` by default. Keep it local; it has no
-network authentication boundary. See [64-bit client integration](docs/CLIENT_INTEGRATION.md).
+network authentication boundary. See [64-bit client integration](docs/CLIENT_INTEGRATION.md)
+and the [service authority contract](docs/SERVICE_AUTHORITY.md).
 
 ## Python API
 

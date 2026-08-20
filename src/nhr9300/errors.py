@@ -21,6 +21,10 @@ class NHRValidationError(NHRError, ValueError):
     """A command or configuration failed local validation."""
 
 
+class NHRPolicyError(NHRError):
+    """A service policy rejected an otherwise valid operation."""
+
+
 class NHRNotArmedError(NHRStateError):
     """An energizing operation was requested without a valid arm lease."""
 

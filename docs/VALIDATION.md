@@ -48,3 +48,15 @@ current product without requiring session context.
 Hardware tests are never inferred from simulator results. A release is marked
 hardware-validated only after the exact approved profile, report, CSVs and final
 safe-state evidence have been archived.
+
+## Milestone 1 software validation — 2026-08-20
+
+The service-authority implementation was validated without physical hardware.
+The focused service/public-API selection passed 15 tests. The complete software
+suite then passed 87 tests with the two hardware tests skipped.
+
+The simulator coverage includes versioned and legacy read-route compatibility,
+independent observer detach, persistence of service-owned acquisition after a
+routine, primitive-control rejection for a physical-backend configuration, and
+shutdown readback with output and watchdog disabled. This evidence does not
+validate a physical shutdown delay, IVI behavior or an energizing workflow.
