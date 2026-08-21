@@ -156,9 +156,10 @@ Hardware start uses two independent gates:
 
 ## Milestone 3 — Runtime observability contract
 
-**Software implementation:** complete in the working tree as of August 21,
-2026. Focused snapshot/event tests and the complete simulator/software suite
-passed. No commit, push or Milestone 3 physical validation has been performed.
+**Software implementation:** committed as `7a05330` and published on
+`codex/milestone-3-runtime-observability` as of August 21, 2026. Focused
+snapshot/event tests and the complete simulator/software suite passed. No
+Milestone 3 physical validation has been performed.
 
 ### Outcome
 
@@ -208,6 +209,12 @@ remain observable; normal disconnects do not create error tracebacks.
 - a slow or disconnected viewer cannot affect the workflow.
 
 ## Milestone 4 — Read-only 64-bit web monitor
+
+**Software implementation:** complete in the working tree as of August 21,
+2026. Fifteen focused monitor tests and the final complete simulator/software
+suite passed. A standard 64-bit Python smoke test and desktop visual QA covered
+unavailable, live, stale and service-error states. No physical validation has
+been performed for Milestone 4.
 
 ### Outcome
 

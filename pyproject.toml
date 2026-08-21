@@ -24,9 +24,13 @@ test = [
 [project.scripts]
 nhr9300-service = "nhr9300.service:main"
 nhr9300-run = "nhr9300.cli:main"
+nhr9300-monitor = "nhr9300.monitor:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+nhr9300 = ["monitor_assets/*.html", "monitor_assets/*.css", "monitor_assets/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

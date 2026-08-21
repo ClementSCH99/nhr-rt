@@ -58,6 +58,19 @@ network authentication boundary. See [64-bit client integration](docs/CLIENT_INT
 and the [service authority contract](docs/SERVICE_AUTHORITY.md). Read-only
 applications use the consolidated [runtime observability contract](docs/RUNTIME_OBSERVABILITY.md).
 
+## Run the read-only web monitor
+
+Install the base package in a standard 64-bit Python environment while the
+32-bit service remains separate, then select one configured instrument:
+
+```powershell
+nhr9300-monitor --instrument-id nhr-79503
+```
+
+Open `http://127.0.0.1:9400`. The monitor is localhost-only, works without an
+internet connection and exposes no NHR control. See the
+[monitor contract and operating guide](docs/MONITOR.md).
+
 ## Python API
 
 ```python

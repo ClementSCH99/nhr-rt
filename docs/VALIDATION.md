@@ -96,3 +96,35 @@ This evidence does not validate IVI timing, physical NHR behavior, real 32/64-bi
 Milestone 3 viewer deployment, external CAN/BMS sources or dynamic SoP limits.
 The external-source and dynamic-limit snapshot positions intentionally report
 `not_configured` until Milestones 5 and 6 implement and validate them.
+
+## Milestone 4 software validation — 2026-08-21
+
+The separate read-only web monitor was validated without physical hardware.
+Fifteen focused tests cover locally packaged assets, the read-only display
+configuration, transparent runtime fixtures, rejection of every supported HTTP
+write method, visible service failure, opening/refreshing/closing without a
+simulator state change, bounded configuration and localhost-only service URLs.
+
+The final complete software suite passed 121 tests with the two hardware tests
+skipped. An earlier complete run had one intermittent failure in the existing
+Milestone 2 separate-64-bit-process workflow test; it passed immediately in
+isolation and passed again in the final complete run. Python 3.12 64-bit also
+imported the monitor, loaded its packaged assets and bound a localhost server
+without IVI or third-party monitor dependencies.
+
+Desktop visual QA at 1440 x 900 covered:
+
+- disconnected/unavailable values without converting API `null` counters to
+  zero;
+- live simulator values, fresh measurement status, 5 Hz acquisition and the
+  bounded trend buffer;
+- stale measurement, stale interlock, enabled output, acquisition error and
+  static power ceilings from an API fixture;
+- service loss with the link marked unavailable, retained values labelled as
+  retained and measurement freshness changed to unknown;
+- absence of buttons, forms, inputs, selectors or other control affordances.
+
+The browser used only assets served from localhost. This software evidence does
+not validate physical NHR behavior, IVI timing, energized-test interference,
+external safety heartbeat handling or a dynamic SoP ceiling. Those remain
+future supervised and Milestone 5/6 validation items.

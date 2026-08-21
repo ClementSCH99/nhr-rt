@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NHR9300 Monitor</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-block">
+      <div class="brand-mark" aria-hidden="true">N</div>
+      <div>
+        <p class="eyebrow">NHR REMOTE TESTING</p>
+        <h1>Runtime monitor</h1>
+      </div>
+    </div>
+    <div class="topbar-status">
+      <span class="readonly-pill">READ ONLY</span>
+      <div class="link-status">
+        <span id="link-dot" class="status-dot pending"></span>
+        <div>
+          <span id="link-label">Connecting</span>
+          <small id="link-age">Waiting for service</small>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="context-strip" aria-label="Runtime context">
+      <div><span>INSTRUMENT</span><strong id="instrument-id">—</strong></div>
+      <div><span>STATE</span><strong id="instrument-state">—</strong></div>
+      <div><span>OUTPUT</span><strong id="output-state">—</strong></div>
+      <div><span>MEASUREMENT</span><strong id="freshness">—</strong></div>
+      <time id="generated-time">No snapshot received</time>
+    </section>
+
+    <section id="alert-region" class="alert-region hidden" aria-live="polite"></section>
+
+    <section class="metric-grid" aria-label="Live electrical measurements">
+      <article class="metric-card voltage">
+        <div class="metric-heading"><span>VOLTAGE</span><b>V</b></div>
+        <div><strong id="voltage">—</strong><span>V</span></div>
+        <small id="voltage-caption">Awaiting measurement</small>
+      </article>
+      <article class="metric-card current">
+        <div class="metric-heading"><span>CURRENT</span><b>A</b></div>
+        <div><strong id="current">—</strong><span>A</span></div>
+        <small id="current-caption">Awaiting measurement</small>
+      </article>
+      <article class="metric-card power">
+        <div class="metric-heading"><span>POWER</span><b>W</b></div>
+        <div><strong id="power">—</strong><span>W</span></div>
+        <small id="power-caption">Awaiting measurement</small>
+      </article>
+    </section>
+
+    <section class="dashboard-grid">
+      <article class="panel trend-panel">
+        <div class="panel-header">
+          <div><p class="eyebrow">ROLLING WINDOW</p><h2>Electrical trends</h2></div>
+          <div class="legend"><span class="v">Voltage</span><span class="i">Current</span><span class="p">Power</span></div>
+        </div>
+        <canvas id="trend-chart" aria-label="Rolling voltage current and power trends"></canvas>
+        <div class="chart-footer"><span id="trend-window">Last 0 samples</span><span>Locally buffered display data</span></div>
+      </article>
+
+      <article class="panel workflow-panel">
+        <div class="panel-header">
+          <div><p class="eyebrow">EXECUTION</p><h2>Active workflow</h2></div>
+          <span id="workflow-badge" class="state-badge">IDLE</span>
+        </div>
+        <div class="workflow-name" id="workflow-name">No active workflow</div>
+        <dl class="detail-list">
+          <div><dt>Stage</dt><dd id="workflow-stage">—</dd></div>
+          <div><dt>Step</dt><dd id="workflow-step">—</dd></div>
+          <div><dt>Condition</dt><dd id="workflow-condition">—</dd></div>
+        </dl>
+        <div class="progress-block">
+          <div><span>Reviewed progress</span><strong id="progress-label">Unavailable</strong></div>
+          <div class="progress-track"><span id="progress-bar"></span></div>
+          <small id="progress-detail">The API does not report a determinate percentage.</small>
+        </div>
+      </article>
+
+      <article class="panel totals-panel">
+        <div class="panel-header"><div><p class="eyebrow">ACCUMULATED</p><h2>Capacity &amp; energy</h2></div></div>
+        <div class="totals-grid">
+          <div><span>CHARGE</span><strong id="charge-ah">—</strong><small>Ah</small></div>
+          <div><span>DISCHARGE</span><strong id="discharge-ah">—</strong><small>Ah</small></div>
+          <div><span>CHARGE</span><strong id="charge-wh">—</strong><small>Wh</small></div>
+          <div><span>DISCHARGE</span><strong id="discharge-wh">—</strong><small>Wh</small></div>
+        </div>
+      </article>
+
+      <article class="panel safety-panel">
+        <div class="panel-header"><div><p class="eyebrow">READ-ONLY SAFETY VIEW</p><h2>Interlocks &amp; limits</h2></div></div>
+        <div id="interlock-list" class="interlock-list"><p class="empty-state">No interlock data</p></div>
+        <div class="limit-row">
+          <div><span>Charge ceiling</span><strong id="charge-limit">Not configured</strong></div>
+          <div><span>Discharge ceiling</span><strong id="discharge-limit">Not configured</strong></div>
+        </div>
+        <div class="reserved-note"><span>EXTERNAL / SOP</span><strong id="external-status">Not configured — reserved for M5/M6</strong></div>
+      </article>
+
+      <article class="panel evidence-panel">
+        <div class="panel-header"><div><p class="eyebrow">ACQUISITION</p><h2>Evidence health</h2></div><span id="acquisition-badge" class="state-badge">UNKNOWN</span></div>
+        <dl class="detail-list">
+          <div><dt>Samples</dt><dd id="sample-count">—</dd></div>
+          <div><dt>Observed rate</dt><dd id="observed-rate">—</dd></div>
+          <div class="path-row"><dt>Evidence path</dt><dd id="evidence-path">—</dd></div>
+        </dl>
+      </article>
+    </section>
+  </main>
+
+  <footer>
+    <span>NHR9300 local monitor</span>
+    <span>No connect, disconnect, start, stop or setpoint controls</span>
+  </footer>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
