@@ -60,3 +60,21 @@ independent observer detach, persistence of service-owned acquisition after a
 routine, primitive-control rejection for a physical-backend configuration, and
 shutdown readback with output and watchdog disabled. This evidence does not
 validate a physical shutdown delay, IVI behavior or an energizing workflow.
+
+## Milestone 2 software validation — 2026-08-20
+
+The approved-workflow service implementation was validated without physical
+hardware. Focused tests cover immutable JSON/CSV bundle digests, registry drift,
+remote-control policy, the two physical-start gates without connecting IVI,
+preflight, asynchronous start, request idempotence, one-run exclusivity,
+progress, run-owned CSV evidence, idempotent cooperative stop, forced failure,
+interrupted-manifest recovery and graceful service shutdown.
+
+A separate 64-bit Python 3.12 process completed preflight, start, polling and a
+simulated workflow against the service test process running under 32-bit Python.
+The complete software suite passed 98 tests with the two hardware tests skipped.
+
+No physical workflow, fallback timeout, IVI reconnect or hardware shutdown
+behavior was validated for Milestone 2. Physical execution remains disabled
+unless a local registry, per-instrument remote enable, per-run acknowledgement
+and explicitly approved controlled-stop timeout are all present.

@@ -31,13 +31,16 @@ localhost HTTP/SSE contract.
 | `profiles` | JSON/CSV loading and validation into typed workflow configuration |
 | `sequences` | Ordered routines, shared acquisition, stage CSVs and directional totals |
 | `execution` | Reusable preflight, execution, evidence and cleanup lifecycle |
+| `workflow_registry` | Immutable startup bundles, approval metadata and canonical digests |
+| `workflow_runs` | Per-instrument reservation, asynchronous state, cooperative stop and recovery manifests |
 | `service` | Local HTTP/SSE adapter and instrument ownership |
 | `client` | Dependency-free 64-bit client for the service contract |
 | `cli` | Argument parsing and operator acknowledgement only |
 
 The dependency direction points toward `types`, never toward the CLI or HTTP
-layer. Transport adapters may call `execution`; execution does not import a
-client or UI.
+layer. `service` owns `workflow_runs`, which injects the already-owned
+instrument and collector into `execution`. Execution does not create a backend
+on the service path and does not import a client or UI.
 
 ## Extension boundaries
 

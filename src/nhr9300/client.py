@@ -4,11 +4,35 @@ from __future__ import annotations
 
 import json
 import threading
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, TypedDict
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .errors import NHRError
+
+
+class WorkflowSummary(TypedDict, total=False):
+    workflow_id: str
+    instrument_id: str
+    bundle_digest: str | None
+    available: bool
+    error: str | None
+    profile_name: str | None
+    test_description: str | None
+    stage_count: int
+
+
+class WorkflowRunSnapshot(TypedDict, total=False):
+    run_id: str
+    request_id: str
+    workflow_id: str
+    bundle_digest: str
+    instrument_id: str
+    state: str
+    outcome: str | None
+    stop_requested: bool
+    report_path: str
+    error: str | None
 
 
 class NHRServiceClient:
@@ -93,6 +117,57 @@ class NHRServiceClient:
 
     def stop(self, instrument_id: str) -> dict[str, Any]:
         return self._request("POST", f"/instruments/{instrument_id}/stop", {})
+
+    def workflows(self, instrument_id: str) -> list[WorkflowSummary]:
+        return self._request("GET", f"/instruments/{instrument_id}/workflows")
+
+    def preflight_workflow(
+        self,
+        instrument_id: str,
+        workflow_id: str,
+        bundle_digest: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/instruments/{instrument_id}/workflow-runs/preflight",
+            {"workflow_id": workflow_id, "bundle_digest": bundle_digest},
+        )
+
+    def start_workflow(
+        self,
+        instrument_id: str,
+        *,
+        request_id: str,
+        workflow_id: str,
+        bundle_digest: str,
+        operator_acknowledgement: str = "",
+    ) -> WorkflowRunSnapshot:
+        return self._request(
+            "POST",
+            f"/instruments/{instrument_id}/workflow-runs",
+            {
+                "request_id": request_id,
+                "workflow_id": workflow_id,
+                "bundle_digest": bundle_digest,
+                "operator_acknowledgement": operator_acknowledgement,
+            },
+        )
+
+    def workflow_run(
+        self, instrument_id: str, run_id: str
+    ) -> WorkflowRunSnapshot:
+        return self._request(
+            "GET", f"/instruments/{instrument_id}/workflow-runs/{run_id}"
+        )
+
+    def stop_workflow(
+        self, instrument_id: str, run_id: str
+    ) -> WorkflowRunSnapshot:
+        return self._request(
+            "POST",
+            f"/instruments/{instrument_id}/workflow-runs/{run_id}/stop",
+            {},
+        )
 
     def stream(
         self,

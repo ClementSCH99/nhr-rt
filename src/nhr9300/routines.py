@@ -267,12 +267,16 @@ class RoutineRunner:
         collector: AcquisitionCollector,
         *,
         manage_collector: bool = True,
+        stop_event: threading.Event | None = None,
+        progress_callback: Callable[[str, str], None] | None = None,
     ) -> None:
         self.instrument = instrument
         self.collector = collector
         self.manage_collector = manage_collector
         self.result: RoutineResult | None = None
-        self._stop = threading.Event()
+        self._stop = stop_event or threading.Event()
+        self._owns_stop_event = stop_event is None
+        self._progress_callback = progress_callback
         self._thread: threading.Thread | None = None
 
     @property
@@ -286,7 +290,8 @@ class RoutineRunner:
             raise NHRRoutineError("An externally managed collector must be running")
         result = RoutineResult(routine_id=str(uuid.uuid4()))
         self.result = result
-        self._stop.clear()
+        if self._owns_stop_event:
+            self._stop.clear()
         self._thread = threading.Thread(
             target=self._execute,
             args=(routine, result),
@@ -306,12 +311,17 @@ class RoutineRunner:
             raise
         return result
 
-    def stop(self) -> None:
+    def stop(self, *, emergency: bool = True) -> None:
         self._stop.set()
-        try:
-            self.instrument.emergency_stop("Routine stop requested")
-        except Exception:
-            pass
+        if emergency:
+            try:
+                self.instrument.emergency_stop("Routine stop requested")
+            except Exception:
+                pass
+
+    def request_stop(self) -> None:
+        """Request cooperative termination without issuing a hardware command."""
+        self.stop(emergency=False)
 
     def wait(self, timeout: float | None = None) -> bool:
         """Wait for the active routine and report whether it terminated."""
@@ -335,11 +345,17 @@ class RoutineRunner:
         context = RoutineContext(self.instrument, self.collector, self._stop, result)
         try:
             for index, step in enumerate(routine.steps):
+                if self._stop.is_set():
+                    raise InterruptedError("Routine stop requested")
                 step_name = f"{index:02d}_{step.name}"
                 self.collector.set_context(result.routine_id, step_name)
+                if self._progress_callback is not None:
+                    self._progress_callback(step_name, "started")
                 self._event(result, step_name, "started")
                 step.execute(context)
                 self._event(result, step_name, "completed")
+                if self._progress_callback is not None:
+                    self._progress_callback(step_name, "completed")
             result.state = RoutineState.PASSED
             if result.termination_reason == "condition":
                 result.reason = (
@@ -358,7 +374,7 @@ class RoutineRunner:
             result.reason = str(exc)
             result.errors.append(repr(exc))
         finally:
-            if result.state != RoutineState.PASSED:
+            if result.state == RoutineState.FAILED:
                 try:
                     self.instrument.emergency_stop(
                         f"Routine {result.state.value}: {result.reason}"

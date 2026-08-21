@@ -92,6 +92,12 @@ multiple observation clients and future workflow clients.
 
 ## Milestone 2 — Approved workflows through the 64-bit client
 
+**Software implementation:** complete on
+`codex/milestone-1-service-authority` as of August 20, 2026. Simulator and
+separate 32/64-bit process validation passed. No Milestone 2 physical validation
+has been performed; hardware timing and profiles remain unapproved for this
+milestone.
+
 ### Outcome
 
 A 64-bit program can preflight, start, observe and stop the complete Session 5

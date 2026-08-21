@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import queue
 import statistics
 import threading
@@ -99,6 +100,7 @@ class AcquisitionCollector:
         self._subscribers: list[queue.Queue[AcquisitionSample]] = []
         self._subscribers_lock = threading.Lock()
         self._callbacks: list[Callable[[AcquisitionSample], None]] = []
+        self._callbacks_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._context_lock = threading.Lock()
@@ -110,6 +112,7 @@ class AcquisitionCollector:
         self._first_sample_at: datetime | None = None
         self._overrun_count = 0
         self._statistics_lock = threading.Lock()
+        self._sink_lock = threading.Lock()
         self._cached_status: InstrumentStatus | None = None
         self._status_read_monotonic: float | None = None
         self.error: str | None = None
@@ -157,7 +160,15 @@ class AcquisitionCollector:
             return len(self._subscribers)
 
     def add_callback(self, callback: Callable[[AcquisitionSample], None]) -> None:
-        self._callbacks.append(callback)
+        with self._callbacks_lock:
+            self._callbacks.append(callback)
+
+    def remove_callback(self, callback: Callable[[AcquisitionSample], None]) -> None:
+        with self._callbacks_lock:
+            try:
+                self._callbacks.remove(callback)
+            except ValueError:
+                pass
 
     def start(self) -> AcquisitionCollector:
         if self.running:
@@ -243,6 +254,17 @@ class AcquisitionCollector:
             error=error,
         )
 
+    def csv_snapshot(self) -> tuple[list[str], list[dict[str, str]]]:
+        """Read one consistent snapshot of the service-owned CSV."""
+        if self.csv_path is None:
+            raise NHRValidationError("Acquisition has no CSV path")
+        with self._sink_lock:
+            with self.csv_path.open(newline="", encoding="utf-8") as handle:
+                reader = csv.DictReader(handle)
+                if reader.fieldnames is None:
+                    raise NHRValidationError("Acquisition CSV has no header")
+                return list(reader.fieldnames), list(reader)
+
     def _publish(self, sample: AcquisitionSample) -> None:
         self.latest = sample
         with self._subscribers_lock:
@@ -256,7 +278,9 @@ class AcquisitionCollector:
                     target.put_nowait(sample)
                 except queue.Empty:
                     pass
-        for callback in list(self._callbacks):
+        with self._callbacks_lock:
+            callbacks = list(self._callbacks)
+        for callback in callbacks:
             callback(sample)
 
     def _row(self, sample: AcquisitionSample) -> dict[str, object]:
@@ -316,8 +340,9 @@ class AcquisitionCollector:
                         self._sample_times.append(measurement.monotonic_s)
                     if active_sinks:
                         row = self._row(sample)
-                        for sink in active_sinks:
-                            sink.write(row)
+                        with self._sink_lock:
+                            for sink in active_sinks:
+                                sink.write(row)
                 except Exception as exc:
                     self.error = str(exc)
                     if self.instrument.may_be_energized:
@@ -336,5 +361,6 @@ class AcquisitionCollector:
         finally:
             with self._statistics_lock:
                 self._stopped_monotonic = time.monotonic()
-            for sink in reversed(active_sinks):
-                sink.close()
+            with self._sink_lock:
+                for sink in reversed(active_sinks):
+                    sink.close()

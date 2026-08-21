@@ -4,12 +4,15 @@
     {
       "id": "sim-1",
       "backend": "simulator",
-      "rate_hz": 5
+      "rate_hz": 5,
+      "remote_workflow_control": false
     },
     {
       "id": "sim-2",
       "backend": "simulator",
-      "rate_hz": 5
+      "rate_hz": 5,
+      "remote_workflow_control": false
     }
-  ]
+  ],
+  "workflow_registry": []
 }

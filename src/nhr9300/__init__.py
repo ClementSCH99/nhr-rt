@@ -2,8 +2,13 @@
 
 from .backends import SimulatedBackend
 from .acquisition import AcquisitionCollector
-from .client import NHRServiceClient
-from .execution import WorkflowOutcome, WorkflowRequest, execute_workflow
+from .client import NHRServiceClient, WorkflowRunSnapshot, WorkflowSummary
+from .execution import (
+    WorkflowOutcome,
+    WorkflowRequest,
+    execute_workflow,
+    execute_workflow_on_runtime,
+)
 from .cc_profiles import (
     CCHoldProfile,
     CCProfileConfiguration,
@@ -35,6 +40,7 @@ from .types import (
     Setpoints,
 )
 from .sinks import CsvMeasurementSink, MeasurementSink
+from .workflow_registry import WorkflowBundle
 
 __all__ = [
     "Capabilities",
@@ -60,10 +66,14 @@ __all__ = [
     "StageProfile",
     "WorkflowLimits",
     "WorkflowConfiguration",
+    "WorkflowBundle",
     "WorkflowOutcome",
     "WorkflowRequest",
+    "WorkflowRunSnapshot",
+    "WorkflowSummary",
     "load_cc_profile",
     "execute_workflow",
+    "execute_workflow_on_runtime",
     "load_workflow_profile",
     "validate_cc_profile",
     "validate_workflow_profile",

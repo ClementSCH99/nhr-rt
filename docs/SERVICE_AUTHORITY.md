@@ -23,7 +23,7 @@ v0.2.0 read aliases.
 | Class | Established endpoints |
 |---|---|
 | Read-only | `GET configuration`, inventory, status, measurement, acquisition, routine status and stream |
-| Approved-workflow control | Reserved for the approved workflow API introduced after Milestone 1 |
+| Approved-workflow control | Workflow registry, preflight, start, run status and run-specific stop under `/api/v1` |
 | Primitive compatibility control | `POST connect`, disconnect, limits, arm, command, original routine and stop |
 
 The versioned form inserts `/api/v1` before the established path. For example,
@@ -45,17 +45,42 @@ The option defaults to `false`, is evaluated at startup and is intentionally
 reported by `GET /api/v1/configuration`. It is a migration option, not an
 authentication boundary or workflow approval.
 
+## Approved workflow authority
+
+Approved workflows are a separate control class. The client may provide only a
+registered `workflow_id`, its expected bundle digest, a UUID request identifier
+and the fixed per-run acknowledgement. It cannot provide a profile path,
+workflow JSON, CSV bytes, stage, limit, setpoint or primitive hardware command.
+
+The service loads exact local bundle bytes at startup. A bundle includes the
+workflow JSON and every referenced dynamic CSV. The configured digest, embedded
+profile approvals, target instrument, resource and serial must all agree. Disk
+drift after startup is rejected until the service is restarted.
+
+`remote_workflow_control` defaults to `false`. A physical start additionally
+requires the per-run `SUPERVISED_WORKFLOW_READY` acknowledgement and an
+explicitly named `controlled_stop_policy` containing `approved: true` and its
+reviewed `timeout_s`. No physical fallback timeout is supplied by the software.
+
+Workflow runs and their stop events belong to the service. Loss of the client,
+HTTP response or SSE observer does not stop a run and does not transfer
+authority. Primitive state-changing endpoints return a conflict while an
+approved workflow owns the instrument.
+
 ## Shutdown and restart
 
 For every configured instrument, service shutdown performs the following
 bounded sequence:
 
-1. request stop for an active legacy routine and wait for its thread;
-2. disable the output and clear the arm lease;
-3. disable the watchdog;
-4. read back output state and watchdog state;
-5. stop acquisition;
-6. close the service-owned instrument connection.
+1. request cooperative stop for an active approved workflow;
+2. use the configured emergency fallback if it does not finish in the allowed
+   bound;
+3. request stop for an active legacy routine and wait for its thread;
+4. disable the output and clear the arm lease;
+5. disable the watchdog;
+6. read back output state and watchdog state;
+7. stop acquisition;
+8. close the service-owned instrument connection.
 
 An active routine stop uses the existing v0.2.0 fail-closed emergency-stop
 behavior. The future approved-workflow API will distinguish controlled stop
@@ -69,6 +94,12 @@ delay and must not be used as hardware acceptance evidence.
 Restart means complete shutdown followed by a new process and a fresh reading
 of configuration. No client disconnect, transport failure or normal SSE EOF is
 proof of physical safe state.
+
+An approved workflow performs one service-owned verification reconnect after
+its first cleanup readback. Acquisition pauses, SSE observers receive EOF, the
+service reconnects without yielding ownership, verifies output/watchdog and
+restarts acquisition. This is the sole workflow-specific exception to the rule
+that client detach never closes shared resources.
 
 ## Responsibility split
 

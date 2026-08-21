@@ -69,6 +69,11 @@ print(client.instruments())
 Hardware access and workflow execution are also available as typed APIs, but
 they retain the same approval and safety gates as the CLI.
 
+The versioned service can execute only immutable, locally registered workflow
+bundles. A 64-bit client supplies a `workflow_id`, expected digest and per-run
+acknowledgement; it cannot upload profiles or issue arbitrary hardware
+commands. See [64-bit client integration](docs/CLIENT_INTEGRATION.md).
+
 ## Development and validation
 
 ```powershell

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from nhr9300 import (
     NHRServiceClient,
+    WorkflowBundle,
     WorkflowConfiguration,
     load_cc_profile,
     load_workflow_profile,
@@ -18,6 +19,7 @@ from nhr9300.profiles import (
     load_workflow_profile as direct_load_workflow_profile,
     validate_workflow_profile as direct_validate_workflow_profile,
 )
+from nhr9300.workflow_registry import WorkflowBundle as DirectWorkflowBundle
 
 
 def test_service_client_is_part_of_public_api() -> None:
@@ -33,3 +35,4 @@ def test_workflow_contract_is_part_of_public_api() -> None:
     assert WorkflowConfiguration is DirectWorkflowConfiguration
     assert load_workflow_profile is direct_load_workflow_profile
     assert validate_workflow_profile is direct_validate_workflow_profile
+    assert WorkflowBundle is DirectWorkflowBundle

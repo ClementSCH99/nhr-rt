@@ -5,11 +5,12 @@ from __future__ import annotations
 import csv
 import math
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Callable, Literal, Sequence
 
 from .acquisition import AcquisitionCollector, AcquisitionStatistics
 from .errors import NHRRoutineError, NHRValidationError
@@ -316,50 +317,90 @@ def _split_global_csv(
     global_path: str,
     stages: Sequence[SequenceStage],
     results: Sequence[RoutineResult],
-) -> list[int]:
+    *,
+    snapshot: tuple[list[str], list[dict[str, str]]] | None = None,
+) -> tuple[str, list[int]]:
     path = Path(global_path)
-    with path.open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        fieldnames = reader.fieldnames
-        rows = list(reader)
-    if fieldnames is None:
-        raise NHRRoutineError("Global acquisition CSV has no header")
+    if snapshot is None:
+        with path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames is None:
+                raise NHRRoutineError("Global acquisition CSV has no header")
+            fieldnames = list(reader.fieldnames)
+            rows = list(reader)
+    else:
+        fieldnames, rows = snapshot
+    routine_ids = {result.routine_id for result in results}
+    sequence_rows = [row for row in rows if row["routine_id"] in routine_ids]
+    sequence_path = path.with_name(
+        f"{path.stem}__sequence_{results[0].routine_id[:8]}{path.suffix}"
+    )
+    with sequence_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(sequence_rows)
     counts: list[int] = []
     for index, (stage, result) in enumerate(zip(stages, results)):
-        stage_rows = [row for row in rows if row["routine_id"] == result.routine_id]
-        stage_path = _stage_csv_path(path, index, stage.name)
+        stage_rows = [
+            row for row in sequence_rows if row["routine_id"] == result.routine_id
+        ]
+        stage_path = _stage_csv_path(sequence_path, index, stage.name)
         with stage_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(stage_rows)
         result.csv_path = str(stage_path.resolve())
         counts.append(len(stage_rows))
-    return counts
+    return str(sequence_path.resolve()), counts
 
 
 class SequenceRunner:
     """Run independent routines in order and stop at the first failed stage."""
 
-    def __init__(self, instrument: NHR9300, collector: AcquisitionCollector) -> None:
+    def __init__(
+        self,
+        instrument: NHR9300,
+        collector: AcquisitionCollector,
+        *,
+        manage_collector: bool = True,
+        stop_event: threading.Event | None = None,
+        progress_callback: Callable[[int, SequenceStage, str | None], None] | None = None,
+    ) -> None:
         self.instrument = instrument
         self.collector = collector
+        self.manage_collector = manage_collector
+        self.stop_event = stop_event or threading.Event()
+        self.progress_callback = progress_callback
 
     def run(self, stages: Sequence[SequenceStage]) -> SequenceResult:
         if not stages:
             raise NHRValidationError("A sequence requires at least one stage")
         result = SequenceResult(sequence_id=str(uuid.uuid4()), state=RoutineState.RUNNING)
-        self.collector.start()
+        if self.manage_collector:
+            self.collector.start()
+        elif not self.collector.running:
+            raise NHRRoutineError("The service-owned acquisition is not running")
         result.global_csv_path = (
             str(self.collector.csv_path.resolve())
             if self.collector.csv_path is not None
             else None
         )
         try:
-            for stage in stages:
+            for stage_index, stage in enumerate(stages):
+                if self.progress_callback is not None:
+                    self.progress_callback(stage_index, stage, None)
                 stage_result = RoutineRunner(
                     self.instrument,
                     self.collector,
                     manage_collector=False,
+                    stop_event=self.stop_event,
+                    progress_callback=(
+                        lambda step, _event, index=stage_index, current=stage: (
+                            self.progress_callback(index, current, step)
+                            if self.progress_callback is not None
+                            else None
+                        )
+                    ),
                 ).run(stage.routine)
                 result.stages.append(stage_result)
                 if stage_result.state != RoutineState.PASSED:
@@ -373,15 +414,18 @@ class SequenceRunner:
                 result.state = RoutineState.PASSED
                 result.reason = "All sequence stages passed"
         finally:
-            self.collector.stop()
+            self.collector.set_context()
+            if self.manage_collector:
+                self.collector.stop()
             result.global_acquisition = self.collector.statistics()
         if result.global_csv_path is None:
             raise NHRRoutineError("Sequence acquisition did not produce a global CSV")
         executed_stages = stages[: len(result.stages)]
-        result.stage_sample_counts = _split_global_csv(
+        result.global_csv_path, result.stage_sample_counts = _split_global_csv(
             result.global_csv_path,
             executed_stages,
             result.stages,
+            snapshot=self.collector.csv_snapshot(),
         )
         for stage_result in result.stages:
             totals = _csv_directional_totals(stage_result.csv_path)

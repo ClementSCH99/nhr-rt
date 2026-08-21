@@ -24,6 +24,8 @@ from .instrument import NHR9300
 from .interlocks import StaticInterlockProvider
 from .routines import RoutineRunner, routine_from_mapping
 from .types import OperatingState, SafetyLimits, Setpoints, to_jsonable
+from .workflow_registry import WorkflowRegistry
+from .workflow_runs import WorkflowRunController
 
 LOGGER = logging.getLogger(__name__)
 
@@ -67,6 +69,13 @@ PHYSICAL_PRIMITIVES_DISABLED_BY_DEFAULT = {
     "routine",
     "stop",
 }
+APPROVED_WORKFLOW_ACTIONS = {
+    "workflows",
+    "workflow-preflight",
+    "workflow-runs",
+    "workflow-run",
+    "workflow-stop",
+}
 
 
 def classify_endpoint(method: str, action: str) -> EndpointClass:
@@ -76,6 +85,8 @@ def classify_endpoint(method: str, action: str) -> EndpointClass:
         return EndpointClass.READ_ONLY
     if normalized_method == "POST" and action in PRIMITIVE_ACTIONS:
         return EndpointClass.PRIMITIVE_COMPATIBILITY_CONTROL
+    if action in APPROVED_WORKFLOW_ACTIONS:
+        return EndpointClass.APPROVED_WORKFLOW_CONTROL
     raise NHRValidationError(
         f"Unclassified service endpoint: {normalized_method} {action}"
     )
@@ -88,6 +99,9 @@ class ManagedInstrument:
     runner: RoutineRunner
     backend_name: str
     primitive_compatibility_control: bool = False
+    remote_workflow_control: bool = False
+    controlled_stop_timeout_s: float | None = None
+    workflow_controller: WorkflowRunController | None = None
     shutdown_timeout_s: float = 3.0
     _lifecycle_lock: threading.RLock = field(
         default_factory=threading.RLock, repr=False
@@ -112,6 +126,14 @@ class ManagedInstrument:
         classification = classify_endpoint("POST", action)
         if classification != EndpointClass.PRIMITIVE_COMPATIBILITY_CONTROL:
             return
+        if (
+            self.workflow_controller is not None
+            and self.workflow_controller.active
+            and action in PHYSICAL_PRIMITIVES_DISABLED_BY_DEFAULT
+        ):
+            raise NHRStateError(
+                "Primitive control is unavailable during an approved workflow"
+            )
         if self.backend_name != "ivi":
             return
         if action not in PHYSICAL_PRIMITIVES_DISABLED_BY_DEFAULT:
@@ -126,6 +148,16 @@ class ManagedInstrument:
     def close(self) -> None:
         """Converge the service-owned runtime on a verified non-active state."""
         failures: list[str] = []
+        if self.workflow_controller is not None:
+            try:
+                self.workflow_controller.close(self.shutdown_timeout_s)
+            except Exception as exc:
+                failures.append(f"approved workflow stop failed: {exc}")
+            if self.workflow_controller.active:
+                raise NHRStateError(
+                    f"Shutdown incomplete for {self.instrument.instrument_id}: "
+                    + "; ".join(failures)
+                )
         with self._lifecycle_lock:
             if self.runner.running:
                 self.runner.stop()
@@ -187,6 +219,7 @@ class InstrumentManager:
         self.config_path = config_path
         self.listen_url = listen_url
         output_dir = Path(str(config.get("output_dir", "runs")))
+        backend_names: dict[str, str] = {}
         for item in config.get("instruments", []):
             instrument_id = str(item["id"])
             backend_name = str(item.get("backend", "ivi"))
@@ -209,6 +242,37 @@ class InstrumentManager:
                 raise NHRValidationError(
                     "primitive_compatibility_control must be a boolean"
                 )
+            remote_workflow_control = item.get("remote_workflow_control", False)
+            if not isinstance(remote_workflow_control, bool):
+                raise NHRValidationError(
+                    "remote_workflow_control must be a boolean"
+                )
+            raw_stop_policy = item.get("controlled_stop_policy")
+            controlled_stop_timeout_s = None
+            if raw_stop_policy is not None:
+                if not isinstance(raw_stop_policy, Mapping):
+                    raise NHRValidationError(
+                        "controlled_stop_policy must be an object"
+                    )
+                approved = raw_stop_policy.get("approved", False)
+                profile_name = str(raw_stop_policy.get("profile_name", ""))
+                if not isinstance(approved, bool):
+                    raise NHRValidationError(
+                        "controlled_stop_policy approved must be boolean"
+                    )
+                if approved and profile_name.strip():
+                    try:
+                        controlled_stop_timeout_s = float(
+                            raw_stop_policy.get("timeout_s")
+                        )
+                    except (TypeError, ValueError) as exc:
+                        raise NHRValidationError(
+                            "controlled stop timeout must be a number"
+                        ) from exc
+                    if controlled_stop_timeout_s <= 0:
+                        raise NHRValidationError(
+                            "controlled stop timeout must be greater than zero"
+                        )
             interlock = StaticInterlockProvider(
                 safe=bool(item.get("operator_supervised", backend_name == "simulator"))
             )
@@ -228,6 +292,31 @@ class InstrumentManager:
                 RoutineRunner(instrument, collector, manage_collector=False),
                 backend_name,
                 primitive_control,
+                remote_workflow_control,
+                controlled_stop_timeout_s,
+            )
+            backend_names[instrument_id] = backend_name
+        registry = WorkflowRegistry.from_config(
+            config,
+            base_dir=(config_path.parent if config_path is not None else Path.cwd()),
+            instrument_backends=backend_names,
+        )
+        for managed in self.instruments.values():
+            managed.workflow_controller = WorkflowRunController(
+                instrument=managed.instrument,
+                collector=managed.collector,
+                legacy_runner=managed.runner,
+                registry=registry,
+                output_dir=output_dir,
+                hardware=managed.backend_name == "ivi",
+                remote_enabled=managed.remote_workflow_control,
+                operation_lock=managed._lifecycle_lock,
+                controlled_stop_timeout_s=(
+                    managed.controlled_stop_timeout_s
+                    if managed.backend_name == "ivi"
+                    else managed.shutdown_timeout_s
+                ),
+                reconnect_after_cleanup=True,
             )
 
     def get(self, instrument_id: str) -> ManagedInstrument:
@@ -259,6 +348,10 @@ class InstrumentManager:
                     "backend": managed.backend_name,
                     "primitive_compatibility_control": (
                         managed.primitive_compatibility_control
+                    ),
+                    "remote_workflow_control": managed.remote_workflow_control,
+                    "controlled_stop_timeout_configured": (
+                        managed.controlled_stop_timeout_s is not None
                     ),
                     "requested_rate_hz": managed.collector.rate_hz,
                     "csv_path": (
@@ -311,23 +404,63 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def _route(self) -> tuple[str | None, str | None]:
+    @staticmethod
+    def _require_body_fields(
+        body: Mapping[str, Any],
+        *,
+        allowed: set[str],
+        required: set[str] = frozenset(),
+    ) -> None:
+        unknown = set(body) - allowed
+        missing = required - set(body)
+        if unknown:
+            raise NHRValidationError(
+                f"Unknown workflow request fields: {sorted(unknown)}"
+            )
+        if missing:
+            raise NHRValidationError(
+                f"Missing workflow request fields: {sorted(missing)}"
+            )
+
+    def _route(self) -> tuple[str | None, str | None, str | None]:
         parts = [part for part in urlparse(self.path).path.split("/") if part]
-        if parts[:2] == ["api", "v1"]:
+        versioned = parts[:2] == ["api", "v1"]
+        if versioned:
             parts = parts[2:]
         if len(parts) == 1 and parts[0] == "instruments":
-            return None, "inventory"
+            return None, "inventory", None
         if len(parts) == 1 and parts[0] == "configuration":
-            return None, "configuration"
+            return None, "configuration", None
         if len(parts) == 2 and parts[0] == "instruments":
-            return parts[1], "status"
+            return parts[1], "status", None
         if len(parts) == 3 and parts[0] == "instruments":
-            return parts[1], parts[2]
-        return None, None
+            if parts[2] in {"workflows", "workflow-runs"}:
+                if not versioned:
+                    return None, None, None
+                return parts[1], parts[2], None
+            return parts[1], parts[2], None
+        if (
+            versioned
+            and len(parts) == 4
+            and parts[0] == "instruments"
+            and parts[2] == "workflow-runs"
+        ):
+            if parts[3] == "preflight":
+                return parts[1], "workflow-preflight", None
+            return parts[1], "workflow-run", parts[3]
+        if (
+            versioned
+            and len(parts) == 5
+            and parts[0] == "instruments"
+            and parts[2] == "workflow-runs"
+            and parts[4] == "stop"
+        ):
+            return parts[1], "workflow-stop", parts[3]
+        return None, None, None
 
     def do_GET(self) -> None:
         try:
-            instrument_id, action = self._route()
+            instrument_id, action, run_id = self._route()
             if action == "inventory":
                 self._send(HTTPStatus.OK, self.manager.inventory())
                 return
@@ -338,7 +471,7 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
                 return
             managed = self.manager.get(instrument_id)
-            if action not in READ_ONLY_ACTIONS:
+            if action not in READ_ONLY_ACTIONS | {"workflows", "workflow-run"}:
                 self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
                 return
             classify_endpoint("GET", action)
@@ -362,6 +495,14 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.OK, managed.collector.state())
             elif action == "stream":
                 self._stream(managed)
+            elif action == "workflows":
+                classify_endpoint("GET", action)
+                assert managed.workflow_controller is not None
+                self._send(HTTPStatus.OK, managed.workflow_controller.workflows())
+            elif action == "workflow-run":
+                classify_endpoint("GET", action)
+                assert managed.workflow_controller is not None and run_id is not None
+                self._send(HTTPStatus.OK, managed.workflow_controller.get(run_id))
             else:
                 self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
         except Exception as exc:
@@ -428,40 +569,94 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
-            instrument_id, action = self._route()
+            instrument_id, action, run_id = self._route()
             if instrument_id is None:
                 self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
                 return
             managed = self.manager.get(instrument_id)
-            if action not in PRIMITIVE_ACTIONS:
+            if action not in PRIMITIVE_ACTIONS | {
+                "workflow-preflight",
+                "workflow-runs",
+                "workflow-stop",
+            }:
                 self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
                 return
-            managed.require_allowed(action)
             body = self._json_body()
-            if action == "connect":
-                payload: Any = managed.ensure_running()
-            elif action == "disconnect":
-                payload = managed.detach_observer()
-            elif action == "limits":
-                managed.instrument.configure_safety_limits(SafetyLimits(**body))
-                payload = {"configured": True}
-            elif action == "arm":
-                payload = {
-                    "armed_until_monotonic": managed.instrument.arm(
-                        float(body.get("duration_s", 30.0))
+            if action in APPROVED_WORKFLOW_ACTIONS:
+                classify_endpoint("POST", action)
+                assert managed.workflow_controller is not None
+                if action == "workflow-preflight":
+                    self._require_body_fields(
+                        body,
+                        allowed={"workflow_id", "bundle_digest"},
+                        required={"workflow_id", "bundle_digest"},
                     )
-                }
-            elif action == "command":
-                payload = self._command(managed, body)
-            elif action == "routine":
-                result = managed.runner.start(routine_from_mapping(body))
-                payload = result
-            elif action == "stop":
-                managed.runner.stop()
-                payload = {"stop_requested": True}
-            else:
-                self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
-                return
+                    payload = managed.workflow_controller.preflight(
+                        str(body.get("workflow_id", "")),
+                        str(body.get("bundle_digest", "")),
+                    )
+                    self._send(HTTPStatus.OK, payload)
+                    return
+                if action == "workflow-runs":
+                    self._require_body_fields(
+                        body,
+                        allowed={
+                            "request_id",
+                            "workflow_id",
+                            "bundle_digest",
+                            "operator_acknowledgement",
+                        },
+                        required={"request_id", "workflow_id", "bundle_digest"},
+                    )
+                    payload, created = managed.workflow_controller.start(
+                        request_id=str(body.get("request_id", "")),
+                        workflow_id=str(body.get("workflow_id", "")),
+                        bundle_digest=str(body.get("bundle_digest", "")),
+                        operator_acknowledgement=str(
+                            body.get("operator_acknowledgement", "")
+                        ),
+                    )
+                    self._send(
+                        HTTPStatus.ACCEPTED if created else HTTPStatus.OK,
+                        payload,
+                    )
+                    return
+                if action == "workflow-stop":
+                    self._require_body_fields(body, allowed=set())
+                    if run_id is None:
+                        raise NHRValidationError("run_id is required")
+                    payload, requested = managed.workflow_controller.stop(run_id)
+                    self._send(
+                        HTTPStatus.ACCEPTED if requested else HTTPStatus.OK,
+                        payload,
+                    )
+                    return
+            managed.require_allowed(action)
+            with managed._lifecycle_lock:
+                if action == "connect":
+                    payload = managed.ensure_running()
+                elif action == "disconnect":
+                    payload = managed.detach_observer()
+                elif action == "limits":
+                    managed.instrument.configure_safety_limits(SafetyLimits(**body))
+                    payload = {"configured": True}
+                elif action == "arm":
+                    payload = {
+                        "armed_until_monotonic": managed.instrument.arm(
+                            float(body.get("duration_s", 30.0))
+                        )
+                    }
+                elif action == "command":
+                    payload = self._command(managed, body)
+                elif action == "routine":
+                    result = managed.runner.start(routine_from_mapping(body))
+                    payload = result
+                elif action == "stop":
+                    managed.runner.stop()
+                    payload = {"stop_requested": True}
+                else:
+                    self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+                    return
             self._send(HTTPStatus.OK, payload)
         except Exception as exc:
             self._error(exc)
@@ -490,6 +685,8 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
     def _error(self, exc: Exception) -> None:
         if isinstance(exc, NHRPolicyError):
             status = HTTPStatus.FORBIDDEN
+        elif isinstance(exc, NHRStateError):
+            status = HTTPStatus.CONFLICT
         elif isinstance(exc, (NHRError, ValueError, KeyError, TypeError)):
             status = HTTPStatus.BAD_REQUEST
         else:
