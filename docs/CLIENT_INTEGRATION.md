@@ -81,3 +81,14 @@ A client timeout or process exit does not stop a service-owned run. Reconnect
 and query its `run_id`. During the service-owned final verification reconnect,
 an SSE reader receives EOF and should follow its normal bounded reconnect
 policy.
+
+## Consolidated runtime observation
+
+Milestone 3 clients should use `client.runtime(instrument_id)` for a coherent
+read-only view and `client.events(instrument_id)` for live display updates. The
+event stream is bounded and may report `dropped_before`; refresh `runtime()`
+after any gap. Do not calculate a workflow percentage when
+`progress_available` is false or `progress.percent` is `null`.
+
+The complete versioned schema and reserved Milestone 5/6 fields are documented
+in [RUNTIME_OBSERVABILITY.md](RUNTIME_OBSERVABILITY.md).

@@ -7,8 +7,10 @@ import json
 import logging
 import queue
 import threading
+import time
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +24,11 @@ from .backends.simulator import SimulatedBackend
 from .errors import NHRError, NHRPolicyError, NHRStateError, NHRValidationError
 from .instrument import NHR9300
 from .interlocks import StaticInterlockProvider
+from .observability import (
+    RUNTIME_SCHEMA_VERSION,
+    RuntimeEventBroker,
+    RuntimeEventPublisher,
+)
 from .routines import RoutineRunner, routine_from_mapping
 from .types import OperatingState, SafetyLimits, Setpoints, to_jsonable
 from .workflow_registry import WorkflowRegistry
@@ -52,6 +59,8 @@ READ_ONLY_ACTIONS = {
     "routine",
     "acquisition",
     "stream",
+    "runtime",
+    "events",
 }
 PRIMITIVE_ACTIONS = {
     "connect",
@@ -102,6 +111,8 @@ class ManagedInstrument:
     remote_workflow_control: bool = False
     controlled_stop_timeout_s: float | None = None
     workflow_controller: WorkflowRunController | None = None
+    event_broker: RuntimeEventBroker | None = None
+    event_publisher: RuntimeEventPublisher | None = None
     shutdown_timeout_s: float = 3.0
     _lifecycle_lock: threading.RLock = field(
         default_factory=threading.RLock, repr=False
@@ -148,6 +159,13 @@ class ManagedInstrument:
     def close(self) -> None:
         """Converge the service-owned runtime on a verified non-active state."""
         failures: list[str] = []
+        if self.event_publisher is not None:
+            try:
+                self.event_publisher.close()
+            except Exception as exc:
+                failures.append(f"runtime event publisher stop failed: {exc}")
+        if self.event_broker is not None:
+            self.event_broker.close()
         if self.workflow_controller is not None:
             try:
                 self.workflow_controller.close(self.shutdown_timeout_s)
@@ -318,6 +336,187 @@ class InstrumentManager:
                 ),
                 reconnect_after_cleanup=True,
             )
+            managed.event_broker = RuntimeEventBroker(
+                managed.instrument.instrument_id,
+                subscriber_queue_size=int(config.get("event_queue_size", 100)),
+            )
+            event_publisher = RuntimeEventPublisher(
+                lambda sample, target=managed: self._publish_runtime_updates(
+                    target, sample
+                )
+            )
+            managed.event_publisher = event_publisher
+            managed.collector.add_callback(event_publisher.submit)
+            managed.collector.add_error_callback(
+                lambda _error, target=event_publisher: target.submit(None)
+            )
+
+    @staticmethod
+    def _publish_runtime_updates(managed: ManagedInstrument, sample: Any) -> None:
+        broker = managed.event_broker
+        if broker is None:
+            return
+        if sample is not None:
+            broker.publish("measurement", to_jsonable(sample.measurement))
+        if managed.workflow_controller is not None:
+            broker.publish("workflow", managed.workflow_controller.runtime_snapshot())
+        safety = managed.instrument.observability_state()
+        broker.publish("interlock", {"results": safety["interlocks"]})
+        broker.publish(
+            "limit",
+            InstrumentManager._power_limit_snapshot(safety.get("safety_limits")),
+        )
+        alerts = InstrumentManager._alerts(managed, safety)
+        if alerts:
+            broker.publish("alert", {"active": alerts})
+
+    @staticmethod
+    def _power_limit_snapshot(limits: Any) -> dict[str, Any]:
+        if limits is None:
+            return {
+                "configured": False,
+                "charge_w": None,
+                "discharge_w": None,
+                "external_source": "not_configured",
+            }
+        return {
+            "configured": True,
+            "charge_w": limits.charge_power,
+            "discharge_w": limits.discharge_power,
+            "basis": "approved_static_safety_limits",
+            "profile_name": limits.profile_name,
+            "external_source": "not_configured",
+        }
+
+    @staticmethod
+    def _alerts(
+        managed: ManagedInstrument, safety: Mapping[str, Any]
+    ) -> list[dict[str, str]]:
+        alerts: list[dict[str, str]] = []
+        if managed.collector.error:
+            alerts.append(
+                {
+                    "code": "acquisition_error",
+                    "severity": "error",
+                    "message": managed.collector.error,
+                }
+            )
+        if safety.get("last_error"):
+            alerts.append(
+                {
+                    "code": "instrument_error",
+                    "severity": "error",
+                    "message": str(safety["last_error"]),
+                }
+            )
+        for result in safety["interlocks"]:
+            if not result["safe"] or not result["fresh"]:
+                alerts.append(
+                    {
+                        "code": "interlock_unsafe_or_stale",
+                        "severity": "error",
+                        "message": result["name"],
+                    }
+                )
+        return alerts
+
+    def runtime_snapshot(self, instrument_id: str) -> dict[str, Any]:
+        managed = self.get(instrument_id)
+        with managed._lifecycle_lock:
+            cached_status = managed.instrument.cached_status()
+            status = to_jsonable(cached_status)
+            if status is None:
+                status = {
+                    "instrument_id": instrument_id,
+                    "connected": False,
+                    "remote": False,
+                    "enabled": False,
+                    "state": "off",
+                    "setpoints": None,
+                    "last_error": None,
+                }
+            sample = managed.collector.latest
+            acquisition = to_jsonable(managed.collector.state())
+            safety = managed.instrument.observability_state()
+            workflow = (
+                managed.workflow_controller.runtime_snapshot()
+                if managed.workflow_controller is not None
+                else {
+                    "active": False,
+                    "state": "idle",
+                    "progress": None,
+                    "progress_available": False,
+                }
+            )
+        measurement = None
+        measurement_age_s = None
+        measurement_fresh = False
+        if sample is not None:
+            measurement = to_jsonable(sample.measurement)
+            measurement_age_s = max(
+                0.0, time.monotonic() - sample.measurement.monotonic_s
+            )
+            measurement_fresh = (
+                measurement_age_s <= safety["measurement_max_age_s"]
+            )
+        totals = {
+            "capacity_charge_ah": (
+                None if measurement is None else measurement["capacity_charge_ah"]
+            ),
+            "capacity_discharge_ah": (
+                None if measurement is None else measurement["capacity_discharge_ah"]
+            ),
+            "energy_charge_wh": (
+                None
+                if measurement is None or measurement["energy_charge_kwh"] is None
+                else measurement["energy_charge_kwh"] * 1000.0
+            ),
+            "energy_discharge_wh": (
+                None
+                if measurement is None or measurement["energy_discharge_kwh"] is None
+                else measurement["energy_discharge_kwh"] * 1000.0
+            ),
+        }
+        return {
+            "schema_version": RUNTIME_SCHEMA_VERSION,
+            "generated_at_utc": datetime.now(timezone.utc),
+            "instrument": {
+                "instrument_id": instrument_id,
+                "connected": status["connected"],
+                "remote": status["remote"],
+                "state": status["state"],
+                "output_enabled": status["enabled"],
+                "setpoints": status["setpoints"],
+            },
+            "measurement": {
+                "available": measurement is not None,
+                "fresh": measurement_fresh,
+                "age_s": measurement_age_s,
+                "max_age_s": safety["measurement_max_age_s"],
+                "value": measurement,
+            },
+            "acquisition": {
+                "active": acquisition["active"],
+                "health": "error" if acquisition["last_error"] else "ok",
+                "sample_count": acquisition["sample_count"],
+                "requested_rate_hz": acquisition["requested_rate_hz"],
+                "observed_rate_hz": acquisition["observed_rate_hz"],
+                "evidence_path": acquisition["csv_path"],
+                "last_error": acquisition["last_error"],
+            },
+            "workflow": workflow,
+            "totals": totals,
+            "external_sources": {
+                "status": "not_configured",
+                "sources": [],
+                "note": "Reserved for Milestone 5 external snapshot contract",
+            },
+            "interlocks": {"results": safety["interlocks"]},
+            "effective_power_limits": self._power_limit_snapshot(
+                safety.get("safety_limits")
+            ),
+            "alerts": self._alerts(managed, safety),
+        }
 
     def get(self, instrument_id: str) -> ManagedInstrument:
         try:
@@ -354,6 +553,11 @@ class InstrumentManager:
                         managed.controlled_stop_timeout_s is not None
                     ),
                     "requested_rate_hz": managed.collector.rate_hz,
+                    "event_queue_size": (
+                        managed.event_broker.subscriber_queue_size
+                        if managed.event_broker is not None
+                        else None
+                    ),
                     "csv_path": (
                         str(managed.collector.csv_path)
                         if managed.collector.csv_path is not None
@@ -383,6 +587,7 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
     manager: InstrumentManager
     server_version = "NHR9300Service/0.2"
     stream_keepalive_interval_s = 10.0
+    runtime_event_poll_interval_s = 0.25
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -434,7 +639,7 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] == "instruments":
             return parts[1], "status", None
         if len(parts) == 3 and parts[0] == "instruments":
-            if parts[2] in {"workflows", "workflow-runs"}:
+            if parts[2] in {"workflows", "workflow-runs", "runtime", "events"}:
                 if not versioned:
                     return None, None, None
                 return parts[1], parts[2], None
@@ -495,6 +700,13 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.OK, managed.collector.state())
             elif action == "stream":
                 self._stream(managed)
+            elif action == "runtime":
+                self._send(
+                    HTTPStatus.OK,
+                    self.manager.runtime_snapshot(instrument_id),
+                )
+            elif action == "events":
+                self._events(managed)
             elif action == "workflows":
                 classify_endpoint("GET", action)
                 assert managed.workflow_controller is not None
@@ -507,6 +719,66 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
         except Exception as exc:
             self._error(exc)
+
+    def _events(self, managed: ManagedInstrument) -> None:
+        broker = managed.event_broker
+        if broker is None:
+            raise NHRStateError("Runtime event broker is unavailable")
+        subscriber = broker.subscribe()
+        instrument_id = managed.instrument.instrument_id
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            initial = self.manager.runtime_snapshot(instrument_id)
+            broker.publish("workflow", initial["workflow"])
+            broker.publish("interlock", initial["interlocks"])
+            broker.publish("limit", initial["effective_power_limits"])
+            if initial["alerts"]:
+                broker.publish("alert", {"active": initial["alerts"]})
+            while not broker.closed:
+                try:
+                    event = subscriber.get(
+                        timeout=self.runtime_event_poll_interval_s
+                    )
+                    payload_data = to_jsonable(event)
+                    dropped = broker.take_dropped_count(subscriber)
+                    if dropped:
+                        payload_data["dropped_before"] = dropped
+                    data = json.dumps(payload_data)
+                    payload = (
+                        f"id: {event.sequence}\n"
+                        f"event: {event.event}\n"
+                        f"data: {data}\n\n"
+                    ).encode("utf-8")
+                except queue.Empty:
+                    payload = b": keep-alive\n\n"
+                self.wfile.write(payload)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
+            LOGGER.info(
+                "Runtime SSE client disconnected: instrument=%s client=%s reason=%s",
+                instrument_id,
+                self.client_address,
+                exc,
+            )
+        except OSError:
+            LOGGER.exception(
+                "Unexpected runtime SSE transport error: instrument=%s client=%s",
+                instrument_id,
+                self.client_address,
+            )
+        except Exception:
+            LOGGER.exception(
+                "Unexpected runtime SSE handler error: instrument=%s client=%s",
+                instrument_id,
+                self.client_address,
+            )
+        finally:
+            broker.unsubscribe(subscriber)
+            self.close_connection = True
 
     def _stream(self, managed: ManagedInstrument) -> None:
         managed.ensure_running()

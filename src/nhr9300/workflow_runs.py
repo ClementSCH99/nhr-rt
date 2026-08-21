@@ -314,6 +314,23 @@ class WorkflowRunController:
             prior_stage = run.get("stage")
             if prior_stage is None or prior_stage.get("index") != index:
                 run["_stage_started_monotonic"] = time.monotonic()
+                latest = self.collector.latest
+                if latest is not None:
+                    measurement = latest.measurement
+                    run["_termination_baseline"] = {
+                        "capacity_charge_ah": measurement.capacity_charge_ah,
+                        "capacity_discharge_ah": measurement.capacity_discharge_ah,
+                        "energy_charge_wh": (
+                            None
+                            if measurement.energy_charge_kwh is None
+                            else measurement.energy_charge_kwh * 1000.0
+                        ),
+                        "energy_discharge_wh": (
+                            None
+                            if measurement.energy_discharge_kwh is None
+                            else measurement.energy_discharge_kwh * 1000.0
+                        ),
+                    }
             if not run["stop_requested"]:
                 run["state"] = "running"
             run["stage"] = {
@@ -427,15 +444,93 @@ class WorkflowRunController:
             started = run.get("_stage_started_monotonic")
             if stage is not None and started is not None and run["state"] not in TERMINAL_STATES:
                 elapsed = max(0.0, time.monotonic() - started)
-                duration = float(stage["duration_s"])
-                result["progress"] = {
-                    "kind": "elapsed_time",
-                    "current": elapsed,
-                    "target": duration,
-                    "unit": "s",
-                    "percent": min(100.0, elapsed / duration * 100.0),
-                }
+                if result.get("termination") is not None:
+                    result["termination_metric"] = self._termination_progress(run)
+                raw_duration = stage.get("duration_s")
+                if raw_duration is not None:
+                    duration = float(raw_duration)
+                    result["progress"] = {
+                        "kind": "elapsed_time",
+                        "current": elapsed,
+                        "target": duration,
+                        "unit": "s",
+                        "percent": min(100.0, elapsed / duration * 100.0),
+                    }
+                elif result.get("termination") is not None:
+                    result["progress"] = result["termination_metric"]
             return result
+
+    def _termination_progress(self, run: Mapping[str, Any]) -> dict[str, Any]:
+        termination = run["termination"]
+        field = termination["field"]
+        target = termination["value"]
+        current: float | None = None
+        unit = {
+            "voltage": "V",
+            "temperature": "degC",
+            "capacity_ah": "Ah",
+            "energy_wh": "Wh",
+            "cutoff_current": "A",
+        }.get(field)
+        latest = self.collector.latest
+        if latest is not None:
+            measurement = latest.measurement
+            if field == "voltage":
+                current = measurement.voltage_v
+            elif field == "temperature":
+                current = measurement.temperature_c
+            elif field == "cutoff_current":
+                current = abs(measurement.current_a)
+            elif field in {"capacity_ah", "energy_wh"}:
+                suffix = "capacity" if field == "capacity_ah" else "energy"
+                baseline = run.get("_termination_baseline", {})
+                raw_values = (
+                    (
+                        measurement.capacity_charge_ah,
+                        measurement.capacity_discharge_ah,
+                    )
+                    if field == "capacity_ah"
+                    else (
+                        None
+                        if measurement.energy_charge_kwh is None
+                        else measurement.energy_charge_kwh * 1000.0,
+                        None
+                        if measurement.energy_discharge_kwh is None
+                        else measurement.energy_discharge_kwh * 1000.0,
+                    )
+                )
+                names = (f"{suffix}_charge_{'ah' if suffix == 'capacity' else 'wh'}", f"{suffix}_discharge_{'ah' if suffix == 'capacity' else 'wh'}")
+                deltas = [
+                    max(0.0, abs(float(value)) - abs(float(baseline[name])))
+                    for name, value in zip(names, raw_values)
+                    if value is not None and baseline.get(name) is not None
+                ]
+                current = max(deltas) if deltas else None
+        return {
+            "kind": "termination_metric",
+            "field": field,
+            "operator": termination["operator"],
+            "current": current,
+            "target": target,
+            "unit": unit,
+            "percent": None,
+        }
+
+    def runtime_snapshot(self) -> dict[str, Any]:
+        """Return the active run, or an explicit idle state, for observability."""
+        with self._state_lock:
+            run_id = self._active_run_id
+        if run_id is None:
+            return {
+                "active": False,
+                "state": "idle",
+                "progress": None,
+                "progress_available": False,
+            }
+        result = self.get(run_id)
+        result["active"] = result.get("state") not in TERMINAL_STATES
+        result["progress_available"] = result.get("progress") is not None
+        return result
 
     def stop(self, run_id: str) -> tuple[dict[str, Any], bool]:
         with self._state_lock:

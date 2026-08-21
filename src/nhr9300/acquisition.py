@@ -101,6 +101,7 @@ class AcquisitionCollector:
         self._subscribers_lock = threading.Lock()
         self._callbacks: list[Callable[[AcquisitionSample], None]] = []
         self._callbacks_lock = threading.Lock()
+        self._error_callbacks: list[Callable[[str], None]] = []
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._context_lock = threading.Lock()
@@ -169,6 +170,10 @@ class AcquisitionCollector:
                 self._callbacks.remove(callback)
             except ValueError:
                 pass
+
+    def add_error_callback(self, callback: Callable[[str], None]) -> None:
+        with self._callbacks_lock:
+            self._error_callbacks.append(callback)
 
     def start(self) -> AcquisitionCollector:
         if self.running:
@@ -345,6 +350,13 @@ class AcquisitionCollector:
                                 sink.write(row)
                 except Exception as exc:
                     self.error = str(exc)
+                    with self._callbacks_lock:
+                        error_callbacks = list(self._error_callbacks)
+                    for callback in error_callbacks:
+                        try:
+                            callback(self.error)
+                        except Exception:
+                            pass
                     if self.instrument.may_be_energized:
                         try:
                             self.instrument.emergency_stop(

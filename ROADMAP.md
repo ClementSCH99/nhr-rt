@@ -156,6 +156,10 @@ Hardware start uses two independent gates:
 
 ## Milestone 3 — Runtime observability contract
 
+**Software implementation:** complete in the working tree as of August 21,
+2026. Focused snapshot/event tests and the complete simulator/software suite
+passed. No commit, push or Milestone 3 physical validation has been performed.
+
 ### Outcome
 
 Read-only applications can obtain one coherent view of a running test without

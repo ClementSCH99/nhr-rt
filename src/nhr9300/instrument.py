@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 from concurrent.futures import Future
+from dataclasses import replace
 from typing import Any, Callable, Sequence, TypeVar
 
 from .backends.base import NHRBackend
@@ -61,6 +62,7 @@ class NHR9300:
         self._limits: SafetyLimits | None = None
         self._armed_until: float | None = None
         self._last_measurement: Measurement | None = None
+        self._last_status: InstrumentStatus | None = None
         self._last_error: str | None = None
         self._may_be_energized = False
         self._lock = threading.RLock()
@@ -107,6 +109,37 @@ class NHR9300:
         """Return service-owned connection state without touching the backend."""
         return self._connected
 
+    def observability_state(self) -> dict[str, Any]:
+        """Return cached safety state without performing a backend operation."""
+        now = time.monotonic()
+        with self._lock:
+            limits = self._limits
+            measurement_max_age_s = self._measurement_max_age_s
+            interlock_max_age_s = self._interlock_max_age_s
+            last_error = self._last_error
+            providers = tuple(self._interlocks)
+        signals = [
+            signal for provider in providers for signal in provider.signals()
+        ]
+        return {
+            "measurement_max_age_s": measurement_max_age_s,
+            "interlock_max_age_s": interlock_max_age_s,
+            "last_error": last_error,
+            "safety_limits": limits,
+            "interlocks": [
+                {
+                    "name": signal.name,
+                    "safe": signal.safe,
+                    "fresh": now - signal.timestamp_monotonic
+                    <= interlock_max_age_s,
+                    "age_s": max(0.0, now - signal.timestamp_monotonic),
+                    "max_age_s": interlock_max_age_s,
+                    "detail": signal.detail,
+                }
+                for signal in signals
+            ],
+        }
+
     def connect(self) -> NHR9300:
         with self._lock:
             if self._connected:
@@ -117,6 +150,7 @@ class NHR9300:
             try:
                 self._capabilities = self._call(self._backend.read_capabilities)
                 observed = self._call(self._backend.read_status)
+                self._last_status = observed
                 self._may_be_energized = observed.enabled and observed.state in (
                     OperatingState.CHARGE,
                     OperatingState.DISCHARGE,
@@ -161,6 +195,7 @@ class NHR9300:
     def read_status(self) -> InstrumentStatus:
         self._require_connected()
         raw = self._call(self._backend.read_status)
+        self._last_status = raw
         return InstrumentStatus(
             instrument_id=raw.instrument_id,
             connected=raw.connected,
@@ -171,6 +206,23 @@ class NHR9300:
             armed_until_monotonic=self._armed_until,
             last_error=self._last_error,
         )
+
+    def cached_status(self) -> InstrumentStatus | None:
+        """Return the last observed status without touching the backend."""
+        with self._lock:
+            raw = self._last_status
+            if raw is None:
+                return None
+            return InstrumentStatus(
+                instrument_id=raw.instrument_id,
+                connected=self._connected and raw.connected,
+                remote=raw.remote,
+                enabled=raw.enabled,
+                state=raw.state,
+                setpoints=raw.setpoints,
+                armed_until_monotonic=self._armed_until,
+                last_error=self._last_error,
+            )
 
     def read_measurement(self) -> Measurement:
         self._require_connected()
@@ -333,6 +385,10 @@ class NHR9300:
     def standby(self) -> None:
         self._require_connected()
         self._call(self._backend.set_state, OperatingState.STANDBY)
+        if self._last_status is not None:
+            self._last_status = replace(
+                self._last_status, state=OperatingState.STANDBY
+            )
         self._may_be_energized = False
 
     def disable(self) -> None:
@@ -341,6 +397,12 @@ class NHR9300:
             self._call(self._backend.set_state, OperatingState.STANDBY)
         finally:
             self._call(self._backend.set_enabled, False)
+            if self._last_status is not None:
+                self._last_status = replace(
+                    self._last_status,
+                    enabled=False,
+                    state=OperatingState.STANDBY,
+                )
             self._armed_until = None
             self._may_be_energized = False
 
@@ -357,6 +419,12 @@ class NHR9300:
                 self._call(operation, argument)
             except Exception as exc:
                 failures.append(exc)
+        if self._last_status is not None and not failures:
+            self._last_status = replace(
+                self._last_status,
+                enabled=False,
+                state=OperatingState.STANDBY,
+            )
         if failures:
             raise NHRStateError(
                 f"Emergency stop incomplete: {'; '.join(map(str, failures))}"

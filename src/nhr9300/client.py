@@ -35,6 +35,20 @@ class WorkflowRunSnapshot(TypedDict, total=False):
     error: str | None
 
 
+class RuntimeSnapshot(TypedDict, total=False):
+    schema_version: str
+    generated_at_utc: str
+    instrument: dict[str, Any]
+    measurement: dict[str, Any]
+    acquisition: dict[str, Any]
+    workflow: dict[str, Any]
+    totals: dict[str, float | None]
+    external_sources: dict[str, Any]
+    interlocks: dict[str, Any]
+    effective_power_limits: dict[str, Any]
+    alerts: list[dict[str, str]]
+
+
 class NHRServiceClient:
     def __init__(
         self,
@@ -85,6 +99,9 @@ class NHRServiceClient:
 
     def acquisition(self, instrument_id: str) -> dict[str, Any]:
         return self._request("GET", f"/instruments/{instrument_id}/acquisition")
+
+    def runtime(self, instrument_id: str) -> RuntimeSnapshot:
+        return self._request("GET", f"/instruments/{instrument_id}/runtime")
 
     def configure_limits(
         self, instrument_id: str, limits: Mapping[str, Any]
@@ -188,3 +205,31 @@ class NHRServiceClient:
                 line = raw_line.decode("utf-8").strip()
                 if line.startswith("data: "):
                     yield json.loads(line[6:])
+
+    def events(
+        self,
+        instrument_id: str,
+        *,
+        stop_event: threading.Event | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield typed v1 runtime SSE event envelopes."""
+        if stop_event is not None and stop_event.is_set():
+            return
+        request = Request(
+            self.base_url + f"/instruments/{instrument_id}/events",
+            headers={"Accept": "text/event-stream"},
+        )
+        with urlopen(request, timeout=None) as response:
+            event_name: str | None = None
+            for raw_line in response:
+                if stop_event is not None and stop_event.is_set():
+                    return
+                line = raw_line.decode("utf-8").strip()
+                if line.startswith("event: "):
+                    event_name = line[7:]
+                elif line.startswith("data: "):
+                    payload = json.loads(line[6:])
+                    if event_name is not None and payload.get("event") != event_name:
+                        raise NHRError("Runtime SSE event name does not match payload")
+                    yield payload
+                    event_name = None

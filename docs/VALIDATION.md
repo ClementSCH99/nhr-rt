@@ -78,3 +78,21 @@ No physical workflow, fallback timeout, IVI reconnect or hardware shutdown
 behavior was validated for Milestone 2. Physical execution remains disabled
 unless a local registry, per-instrument remote enable, per-run acknowledgement
 and explicitly approved controlled-stop timeout are all present.
+
+## Milestone 3 software validation — 2026-08-21
+
+Runtime observability was validated without physical hardware. Eight focused
+tests cover the disconnected read-only snapshot, live consolidated measurement
+and evidence state, acquisition-error alerts, independent SSE viewers, bounded
+slow-viewer queues with explicit dropped-event counts, publication-error
+isolation, bounded broker shutdown and HTTP SSE EOF during service shutdown.
+
+The final complete software suite passed 106 tests with the two hardware tests
+skipped. Existing service-authority, workflow-registry, separate-process M2 and
+simulator safety regressions remained green. Python compilation and Git diff
+whitespace checks also passed.
+
+This evidence does not validate IVI timing, physical NHR behavior, real 32/64-bit
+Milestone 3 viewer deployment, external CAN/BMS sources or dynamic SoP limits.
+The external-source and dynamic-limit snapshot positions intentionally report
+`not_configured` until Milestones 5 and 6 implement and validate them.
