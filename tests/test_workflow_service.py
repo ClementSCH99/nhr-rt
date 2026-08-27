@@ -256,6 +256,33 @@ def test_workflow_exclusivity_and_idempotent_stop(tmp_path) -> None:
         server.server_close()
 
 
+def test_workflow_preflight_uses_longer_configurable_client_timeout(monkeypatch) -> None:
+    observed: list[float] = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self) -> bytes:
+            return b'{"passed": true}'
+
+    def open_request(request, *, timeout):
+        observed.append(timeout)
+        return Response()
+
+    monkeypatch.setattr("nhr9300.client.urlopen", open_request)
+    client = NHRServiceClient("http://127.0.0.1:9300")
+
+    assert client.preflight_workflow("nhr", "rest", "sha256:digest")["passed"]
+    assert client.preflight_workflow(
+        "nhr", "rest", "sha256:digest", timeout_s=45.0
+    )["passed"]
+    assert observed == [30.0, 45.0]
+
+
 def test_registry_drift_is_rejected_by_service(tmp_path) -> None:
     profile, config, server, manager, thread, client = _start_server(tmp_path)
     digest = config["workflow_registry"][0]["expected_bundle_digest"]
@@ -433,7 +460,12 @@ while True:
         break
     assert time.monotonic() < deadline
     time.sleep(0.02)
-print(json.dumps({'bits': 64, 'state': state['state']}))
+print(json.dumps({
+    'bits': 64,
+    'state': state['state'],
+    'error': state.get('error'),
+    'report_path': state.get('report_path'),
+}))
 """
     environment = dict(os.environ)
     environment["PYTHONPATH"] = str(Path("src").resolve())
@@ -458,7 +490,8 @@ print(json.dumps({'bits': 64, 'state': state['state']}))
         except FileNotFoundError:
             pytest.skip("Windows 64-bit Python launcher is unavailable")
         result = json.loads(completed.stdout)
-        assert result == {"bits": 64, "state": "passed"}
+        assert result["bits"] == 64
+        assert result["state"] == "passed", result
     finally:
         server.shutdown()
         thread.join()

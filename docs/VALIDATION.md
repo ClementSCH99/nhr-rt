@@ -128,3 +128,26 @@ The browser used only assets served from localhost. This software evidence does
 not validate physical NHR behavior, IVI timing, energized-test interference,
 external safety heartbeat handling or a dynamic SoP ceiling. Those remain
 future supervised and Milestone 5/6 validation items.
+
+## Expansion Phase 2 physical validation — 2026-08-25 to 2026-08-27
+
+Milestones 1–4 completed the planned simulator and supervised physical campaign
+on NHR serial `79503` (`DC PM 1`). T0, A1–A6, B1–B5, C0–C6 and Z1 received
+final `PASS` dispositions. The campaign covered independent observers,
+primitive-control rejection, runtime/monitor consistency, approved remote
+workflow ownership, controlled stop, initiating-client loss, graceful service
+shutdown and abrupt service loss with watchdog fallback.
+
+The final Tier E contract was limited to the reviewed 24s2p NMC module and the
+approved 5 A charge workflow: 80–100 V, 10 A and 1000 W campaign bounds; 60 s
+charge followed by 10 s `rest`; and a 10 s controlled-stop/watchdog bound. The
+operator independently confirmed the final safe state: output and watchdog off,
+channels disabled, V/I/P setpoints zero, state `OFF`, no displayed fault and no
+physical anomaly.
+
+This acceptance does not cover discharge, another DUT or profile, unattended
+operation, external CAN/BMS fail-closed interlocks, dynamic SoP limiting or a
+general product release. The closeout archive is indexed in
+`archives/phase2-physical-validation-20260825/README.md`. Raw generated runs and
+local approved profiles were deliberately removed after the Markdown evidence
+was archived.

@@ -422,32 +422,31 @@ class InstrumentManager:
 
     def runtime_snapshot(self, instrument_id: str) -> dict[str, Any]:
         managed = self.get(instrument_id)
-        with managed._lifecycle_lock:
-            cached_status = managed.instrument.cached_status()
-            status = to_jsonable(cached_status)
-            if status is None:
-                status = {
-                    "instrument_id": instrument_id,
-                    "connected": False,
-                    "remote": False,
-                    "enabled": False,
-                    "state": "off",
-                    "setpoints": None,
-                    "last_error": None,
-                }
-            sample = managed.collector.latest
-            acquisition = to_jsonable(managed.collector.state())
-            safety = managed.instrument.observability_state()
-            workflow = (
-                managed.workflow_controller.runtime_snapshot()
-                if managed.workflow_controller is not None
-                else {
-                    "active": False,
-                    "state": "idle",
-                    "progress": None,
-                    "progress_available": False,
-                }
-            )
+        cached_status = managed.instrument.cached_status()
+        status = to_jsonable(cached_status)
+        if status is None:
+            status = {
+                "instrument_id": instrument_id,
+                "connected": False,
+                "remote": False,
+                "enabled": False,
+                "state": "off",
+                "setpoints": None,
+                "last_error": None,
+            }
+        sample = managed.collector.latest
+        acquisition = to_jsonable(managed.collector.state())
+        safety = managed.instrument.observability_state()
+        workflow = (
+            managed.workflow_controller.runtime_snapshot()
+            if managed.workflow_controller is not None
+            else {
+                "active": False,
+                "state": "idle",
+                "progress": None,
+                "progress_available": False,
+            }
+        )
         measurement = None
         measurement_age_s = None
         measurement_fresh = False

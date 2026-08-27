@@ -1,6 +1,7 @@
 # Python virtual environments and generated files
 .venv/
 .venv32/
+.venv64/
 __pycache__/
 *.py[cod]
 

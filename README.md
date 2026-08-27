@@ -97,7 +97,9 @@ commands. See [64-bit client integration](docs/CLIENT_INTEGRATION.md).
 
 - [Development guide](docs/DEVELOPMENT.md)
 - [Validation record](docs/VALIDATION.md)
+- [Operator proficiency exercises](docs/OPERATOR_PROFICIENCY_EXERCISES.md)
 - [Evidence registry](archives/README.md)
+- [Archived Phase 2 validation plan](archives/phase2-physical-validation-20260825/PHASE2_PHYSICAL_VALIDATION_PLAN.md)
 - [Future roadmap](ROADMAP.md)
 
 Software tests do not constitute hardware validation. Physical execution always

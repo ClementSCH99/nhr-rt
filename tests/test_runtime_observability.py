@@ -82,6 +82,40 @@ def test_runtime_snapshot_consolidates_live_measurement_and_evidence(tmp_path) -
         _close(server, manager, thread)
 
 
+def test_runtime_snapshot_does_not_wait_for_workflow_lifecycle_lock(tmp_path) -> None:
+    server, manager, thread, client = _server(tmp_path)
+    managed = manager.get("sim-runtime")
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+    request_done = threading.Event()
+    result = []
+
+    def hold_lifecycle_lock() -> None:
+        with managed._lifecycle_lock:
+            lock_held.set()
+            release_lock.wait(2)
+
+    def request_runtime() -> None:
+        try:
+            result.append(client.runtime("sim-runtime"))
+        finally:
+            request_done.set()
+
+    holder = threading.Thread(target=hold_lifecycle_lock)
+    requester = threading.Thread(target=request_runtime)
+    try:
+        holder.start()
+        assert lock_held.wait(1)
+        requester.start()
+        assert request_done.wait(0.5)
+        assert result[0]["schema_version"] == "1.0"
+    finally:
+        release_lock.set()
+        holder.join(timeout=2)
+        requester.join(timeout=2)
+        _close(server, manager, thread)
+
+
 def test_acquisition_failure_is_an_active_runtime_alert(tmp_path) -> None:
     server, manager, thread, client = _server(tmp_path)
     managed = manager.get("sim-runtime")

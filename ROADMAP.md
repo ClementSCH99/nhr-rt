@@ -1,14 +1,19 @@
 # NHR Remote Testing roadmap
 
-**Last updated:** August 20, 2026
+**Last updated:** August 27, 2026
 
 **Current release:** v0.2.0
 
-**Current phase:** Expansion Phase 2 — remote orchestration, external safety and monitoring
+**Current phase:** Operator proficiency exercises after Milestones 1–4 validation
 
 **Target release:** v0.3.0
 
 ## Product direction
+
+Milestones 1–4 and their Expansion Phase 2 validation campaign are complete for
+the exact reviewed configurations. The immediate next activity is the separate
+[operator proficiency exercise track](docs/OPERATOR_PROFICIENCY_EXERCISES.md).
+It does not extend physical authority or replace the Milestone 5–7 gates below.
 
 Version v0.2.0 closed the first expansion phase. The 32-bit IVI service,
 `NHR9300` safety facade, simulator and supervised workflow engine now support
@@ -16,8 +21,10 @@ the main battery-test routines required for normal bench use. Their software
 behavior and the selected physical workflows were validated through Session 5.
 
 Expansion Phase 2 makes those capabilities safely usable by 64-bit
-applications. It adds external fail-closed safety inputs and a simple read-only
+applications. Milestones 1–4 established remote orchestration and the read-only
 operator interface without moving hardware authority outside `nhr-rt`.
+Milestones 5–7 remain the future external-safety, dynamic-limit and release
+work.
 
 The target system uses shared authority rather than one universal master:
 
@@ -63,6 +70,9 @@ The following constraints apply to every milestone:
 
 ## Milestone 1 — Freeze the service authority contract
 
+**Status:** implementation and planned Phase 2 physical validation complete as
+of August 27, 2026.
+
 ### Outcome
 
 The service has an explicit ownership and compatibility model suitable for
@@ -92,11 +102,9 @@ multiple observation clients and future workflow clients.
 
 ## Milestone 2 — Approved workflows through the 64-bit client
 
-**Software implementation:** complete on
-`codex/milestone-1-service-authority` as of August 20, 2026. Simulator and
-separate 32/64-bit process validation passed. No Milestone 2 physical validation
-has been performed; hardware timing and profiles remain unapproved for this
-milestone.
+**Status:** implementation, simulator/separate-process validation and planned
+Phase 2 physical validation complete as of August 27, 2026 for the exact
+archived Tier N/E contracts. This is not approval for another DUT or profile.
 
 ### Outcome
 
@@ -156,10 +164,8 @@ Hardware start uses two independent gates:
 
 ## Milestone 3 — Runtime observability contract
 
-**Software implementation:** committed as `7a05330` and published on
-`codex/milestone-3-runtime-observability` as of August 21, 2026. Focused
-snapshot/event tests and the complete simulator/software suite passed. No
-Milestone 3 physical validation has been performed.
+**Status:** implementation, focused/software validation and planned Phase 2
+physical validation complete as of August 27, 2026.
 
 ### Outcome
 
@@ -210,11 +216,9 @@ remain observable; normal disconnects do not create error tracebacks.
 
 ## Milestone 4 — Read-only 64-bit web monitor
 
-**Software implementation:** complete in the working tree as of August 21,
-2026. Fifteen focused monitor tests and the final complete simulator/software
-suite passed. A standard 64-bit Python smoke test and desktop visual QA covered
-unavailable, live, stale and service-error states. No physical validation has
-been performed for Milestone 4.
+**Status:** implementation, software/visual QA and planned Phase 2 physical
+validation complete as of August 27, 2026. The monitor remained read-only and
+did not acquire hardware authority during supervised physical tests.
 
 ### Outcome
 

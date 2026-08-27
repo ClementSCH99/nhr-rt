@@ -7,6 +7,20 @@ The refactor acceptance archive is published with the
 [v0.2.0 release](https://github.com/ClementSCH99/nhr-rt/releases/tag/v0.2.0).
 The tracked checksum file allows verification after download.
 
+## Expansion Phase 2 — 2026-08-25 to 2026-08-27
+
+The tracked directory
+[`phase2-physical-validation-20260825`](phase2-physical-validation-20260825/README.md)
+contains the archived Milestones 1–4 validation plan, the campaign chronology
+and the Tier N/E closeouts. The campaign finished with `PASS` dispositions for
+T0, A1–A6, B1–B5, C0–C6 and Z1 within the reviewed configurations.
+
+Closeout intentionally removed the generated CSV/JSON runs, approved local
+profiles, local hardware configuration and one-off runner scripts. The retained
+Markdown records preserve the decisions, run IDs, digests, key measurements,
+deviations and validation boundary without keeping about 32 MB of transient
+bench output in the working repository.
+
 | Archive | Retained evidence |
 |---|---|
 | `documentation-history-20260819.zip` | Historical roadmap, implementation guides and accepted Session 4/5 narratives before product-documentation cleanup |

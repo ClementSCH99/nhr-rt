@@ -6,6 +6,8 @@ Install the service with 32-bit Python and the base client package in the
 ```powershell
 # 32-bit service environment
 .\.venv32\Scripts\python.exe -m pip install -e ".[ivi]" --no-build-isolation
+Copy-Item .\examples\service.hardware.example.json .\service.local.json
+# Review the local resource, policies and any workflow registry before startup.
 .\.venv32\Scripts\nhr9300-service.exe --config .\service.local.json
 ```
 
@@ -72,6 +74,13 @@ while run["state"] not in {"passed", "stopped", "failed", "interrupted"}:
     time.sleep(0.25)
     run = client.workflow_run(instrument_id, run["run_id"])
 ```
+
+Physical preflight includes IVI connection, limit readback, cleanup and an
+independent verification reconnect. The client therefore uses a 30-second
+preflight timeout while ordinary requests retain their 10-second timeout. A
+caller may pass `timeout_s=` to `preflight_workflow()` when a reviewed bench
+requires a different bound; changing this client wait does not change the
+service-owned controlled-stop policy.
 
 The acknowledgement is required only for physical starts. Reusing the same
 `request_id` with the same request returns the original run instead of starting

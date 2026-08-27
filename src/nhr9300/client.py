@@ -63,7 +63,12 @@ class NHRServiceClient:
         self.base_url = root if root.endswith(suffix) else root + suffix
 
     def _request(
-        self, method: str, path: str, body: Mapping[str, Any] | None = None
+        self,
+        method: str,
+        path: str,
+        body: Mapping[str, Any] | None = None,
+        *,
+        timeout_s: float = 10.0,
     ) -> Any:
         data = None if body is None else json.dumps(body).encode("utf-8")
         request = Request(
@@ -73,7 +78,7 @@ class NHRServiceClient:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urlopen(request, timeout=10.0) as response:
+            with urlopen(request, timeout=timeout_s) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             payload = json.loads(exc.read().decode("utf-8"))
@@ -143,11 +148,14 @@ class NHRServiceClient:
         instrument_id: str,
         workflow_id: str,
         bundle_digest: str,
+        *,
+        timeout_s: float = 30.0,
     ) -> dict[str, Any]:
         return self._request(
             "POST",
             f"/instruments/{instrument_id}/workflow-runs/preflight",
             {"workflow_id": workflow_id, "bundle_digest": bundle_digest},
+            timeout_s=timeout_s,
         )
 
     def start_workflow(
