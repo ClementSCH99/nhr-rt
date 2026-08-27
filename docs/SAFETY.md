@@ -15,7 +15,7 @@ emergency stop, fixture protection or an operator-approved test plan.
   may be energized.
 - Normal completion, failure and interruption converge on zeroed channels,
   disabled output and disabled watchdog, followed by an independent reconnect.
-- Only the 32-bit service or a directly supervised runner owns a physical NHR.
+- Only the 32-bit service owns a physical NHR in the supported architecture.
 
 ## Dynamic zero behavior
 

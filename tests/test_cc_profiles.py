@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import csv
 import json
-import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,7 +25,6 @@ from nhr9300.routines import (
 )
 from nhr9300.cc_profiles import load_cc_profile, validate_cc_profile
 from nhr9300.types import Measurement, RoutineResult, RoutineState
-from scripts import run_cc_hold
 
 
 def _cc_profile_data(
@@ -382,97 +379,3 @@ def test_hardware_profile_requires_watchdog_and_respects_caps(tmp_path) -> None:
             ),
             hardware=True,
         )
-
-
-def test_current_response_retains_transient_but_evaluates_after_settling(
-    tmp_path,
-) -> None:
-    configuration = load_cc_profile(_write_cc_profile(tmp_path))
-    configuration = replace(
-        configuration,
-        cc_hold=replace(
-            configuration.cc_hold,
-            current_tolerance_a=0.5,
-            current_settling_time_s=0.5,
-            minimum_active_samples=3,
-        ),
-    )
-    csv_path = tmp_path / "response.csv"
-    fieldnames = ["monotonic_s", "step", "state", "current_a"]
-    with csv_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for elapsed_s, current_a in [
-            (0.0, 4.2),
-            (0.1, 4.9),
-            (0.5, 4.99),
-            (0.6, 5.01),
-            (0.7, 5.0),
-        ]:
-            writer.writerow(
-                {
-                    "monotonic_s": 100.0 + elapsed_s,
-                    "step": "03_wait",
-                    "state": "charge",
-                    "current_a": current_a,
-                }
-            )
-
-    response = run_cc_hold._current_response(csv_path, configuration)
-
-    assert response["passed"] is True
-    assert response["active_sample_count"] == 5
-    assert response["transient_sample_count"] == 2
-    assert response["evaluated_sample_count"] == 3
-    assert response["first_active_current_a"] == 4.2
-    assert response["active_maximum_absolute_error_a"] == pytest.approx(0.8)
-    assert response["maximum_absolute_error_a"] == pytest.approx(0.01)
-
-
-def test_supervised_cc_runner_simulation_writes_safe_report(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    data = _cc_profile_data(
-        mode="discharge",
-        termination={
-            "field": "energy_wh",
-            "operator": ">=",
-            "value": 1.0,
-            "relative": True,
-        },
-    )
-    data["safety_limits"]["approved"] = True
-    data["safety_limits"]["profile_name"] = "approved-runner-limits"
-    data["cc_hold"]["approved"] = True
-    data["cc_hold"]["profile_name"] = "approved-runner-energy"
-    data["cc_hold"]["max_duration_s"] = 1.0
-    data["cc_hold"]["arm_duration_s"] = 4.0
-    data["cc_hold"]["current_settling_time_s"] = 0.0
-    data["cc_hold"]["minimum_active_samples"] = 1
-    data["cc_hold"]["termination"]["value"] = 0.002
-    profile = tmp_path / "approved-cc.json"
-    profile.write_text(json.dumps(data), encoding="utf-8")
-    output = tmp_path / "results"
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run_cc_hold.py",
-            "--simulate",
-            "--profile",
-            str(profile),
-            "--output",
-            str(output),
-        ],
-    )
-
-    assert run_cc_hold.main() == 0
-    reports = list(output.glob("*/report.json"))
-    assert len(reports) == 1
-    report = json.loads(reports[0].read_text(encoding="utf-8"))
-    assert report["passed"] is True
-    assert report["routine_result"]["termination_reason"] == "condition"
-    assert report["routine_result"]["termination_field"] == "energy_wh"
-    assert report["current_response"]["passed"] is True
-    assert report["cleanup_status"]["enabled"] is False
-    assert report["watchdog_after_reconnect"] is False
