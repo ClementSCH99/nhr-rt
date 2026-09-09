@@ -25,6 +25,8 @@ test = [
 nhr9300-service = "nhr9300.service:main"
 nhr9300-run = "nhr9300.cli:main"
 nhr9300-monitor = "nhr9300.monitor:main"
+nhr9300-doctor = "nhr9300.diagnostics:doctor_main"
+nhr9300-bundle = "nhr9300.diagnostics:bundle_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

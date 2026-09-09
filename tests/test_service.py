@@ -29,7 +29,12 @@ def test_service_and_64_bit_compatible_client(tmp_path) -> None:
     client = NHRServiceClient(f"http://{host}:{port}")
     try:
         assert client.instruments() == [
-            {"instrument_id": "sim-1", "connected": False}
+            {
+                "instrument_id": "sim-1",
+                "connected": False,
+                "state": 0,
+                "state_name": "UNKNOWN",
+            }
         ]
         connected = client.connect("sim-1")
         assert connected["connected"] is True
@@ -47,10 +52,11 @@ def test_service_and_64_bit_compatible_client(tmp_path) -> None:
         assert client.measurement("sim-1")["instrument_id"] == "sim-1"
         disabled = client.command("sim-1", "disable")
         assert disabled["enabled"] is False
-        assert client.disconnect("sim-1") == {
-            "detached": True,
-            "service_connected": True,
-        }
+        with pytest.warns(DeprecationWarning, match="detach_observer"):
+            assert client.disconnect("sim-1") == {
+                "detached": True,
+                "service_connected": True,
+            }
         assert client.status("sim-1")["connected"] is True
         assert client.acquisition("sim-1")["active"] is True
     finally:
@@ -145,7 +151,7 @@ def test_stream_stop_event_closes_subscription_without_stopping_acquisition(
     finally:
         stop_event.set()
         consumer.join(timeout=2)
-        client.disconnect("sim-stop")
+        client.detach_observer("sim-stop")
         server.shutdown()
         thread.join()
         manager.close()
@@ -188,7 +194,7 @@ def test_closed_sse_client_is_logged_without_error_traceback(
             if record.levelno >= logging.WARNING
         ]
     finally:
-        client.disconnect("sim-close")
+        client.detach_observer("sim-close")
         server.shutdown()
         thread.join()
         manager.close()
@@ -325,7 +331,7 @@ def test_multiple_observers_detach_without_stopping_runtime(tmp_path) -> None:
         first_stream.close()
         second_stream.close()
 
-        assert first.disconnect("sim-shared")["detached"] is True
+        assert first.detach_observer("sim-shared")["detached"] is True
         managed = manager.get("sim-shared")
         assert managed.instrument.connected is True
         assert managed.collector.running is True

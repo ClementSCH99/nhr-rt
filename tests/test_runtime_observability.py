@@ -42,7 +42,8 @@ def test_runtime_snapshot_is_read_only_and_explicit_before_connection(tmp_path) 
             "instrument_id": "sim-runtime",
             "connected": False,
             "remote": False,
-            "state": "off",
+            "state": 0,
+            "state_name": "OFF",
             "output_enabled": False,
             "setpoints": None,
         }
@@ -164,6 +165,22 @@ def test_runtime_events_allow_independent_viewers_and_clean_disconnect(tmp_path)
     finally:
         first.close()
         second.close()
+        _close(server, manager, thread)
+
+
+def test_managed_runtime_observer_owns_thread_and_can_refresh(tmp_path) -> None:
+    server, manager, thread, client = _server(tmp_path)
+    try:
+        with client.observe_events("sim-runtime") as observer:
+            event = observer.get(timeout_s=2)
+            assert event["event"] in EVENT_TYPES
+            assert observer.last_sequence == event["sequence"]
+            observer.needs_runtime_refresh = True
+            assert observer.refresh_runtime()["schema_version"] == "1.0"
+            assert observer.needs_runtime_refresh is False
+        assert observer._thread is not None
+        assert not observer._thread.is_alive()
+    finally:
         _close(server, manager, thread)
 
 

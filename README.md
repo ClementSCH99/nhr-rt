@@ -20,6 +20,10 @@ simulator for software validation.
 See [Architecture](docs/ARCHITECTURE.md) and [Safety](docs/SAFETY.md) before
 adding a hardware command path.
 
+For task-oriented setup, simulation, service/client examples, workflow control,
+evidence interpretation and diagnostics, use the
+[complete operating how-to](docs/HOW_TO_OPERATE_NHR_RT.md).
+
 ## Installation
 
 Python 3.12 or newer is required. The physical driver requires 32-bit Python on
@@ -97,6 +101,8 @@ commands. See [64-bit client integration](docs/CLIENT_INTEGRATION.md).
 
 - [Development guide](docs/DEVELOPMENT.md)
 - [Validation record](docs/VALIDATION.md)
+- [Operating how-to](docs/HOW_TO_OPERATE_NHR_RT.md)
+- [Operator learning findings and improvement backlog](docs/OPERATOR_LEARNING_FINDINGS.md)
 - [Operator proficiency exercises](docs/OPERATOR_PROFICIENCY_EXERCISES.md)
 - [Evidence registry](archives/README.md)
 - [Archived Phase 2 validation plan](archives/phase2-physical-validation-20260825/PHASE2_PHYSICAL_VALIDATION_PLAN.md)

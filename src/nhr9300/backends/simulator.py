@@ -18,6 +18,7 @@ from ..types import (
 
 
 class SimulatedBackend:
+    """Deterministic software backend with an explicitly resettable state."""
     def __init__(
         self,
         instrument_id: str,
@@ -55,6 +56,28 @@ class SimulatedBackend:
         self._energy_charge_kwh = 0.0
         self._energy_discharge_kwh = 0.0
         self._disconnected_at: float | None = None
+
+    def reset_initial_state(self, initial_voltage_v: float) -> None:
+        """Reset voltage and accumulated counters before a simulated workflow.
+
+        The reset is allowed only while disconnected so a caller cannot rewrite
+        the state of an active simulated run.
+        """
+        if self.connected:
+            raise NHRStateError("Simulator initial state can only reset while disconnected")
+        if not 0.0 <= initial_voltage_v <= self.capabilities.voltage_max:
+            raise NHRStateError("Simulator initial voltage is outside capabilities")
+        self.initial_voltage_v = initial_voltage_v
+        self._voltage_v = initial_voltage_v
+        self.enabled = False
+        self.watchdog_enabled = False
+        self.setpoints = Setpoints()
+        self._capacity_charge_ah = 0.0
+        self._capacity_discharge_ah = 0.0
+        self._energy_charge_kwh = 0.0
+        self._energy_discharge_kwh = 0.0
+        self._last_update = time.monotonic()
+        self._disconnected_at = None
 
     def _active_current(self) -> float:
         if self.enabled and self.setpoints.state in (

@@ -5,6 +5,36 @@ class NHRError(Exception):
     """Base class for all package errors."""
 
 
+class NHRTransportError(NHRError):
+    """The localhost service could not be reached or timed out.
+
+    This exception never proves that an instrument or workflow is in a safe
+    state.  Callers must recover state from the service or verify it through
+    the approved independent procedure.
+    """
+
+
+class NHRAPIError(NHRError):
+    """A well-formed HTTP error returned by the NHR service."""
+
+    def __init__(self, message: str, *, status: int, error_type: str | None = None):
+        super().__init__(message)
+        self.status = status
+        self.error_type = error_type
+
+
+class NHRProtocolError(NHRError):
+    """The service response was malformed or incompatible with this client."""
+
+
+class NHRWorkflowTimeout(NHRError, TimeoutError):
+    """Client-side workflow polling expired without stopping the service run."""
+
+
+class NHREvidencePersistenceError(NHRError, OSError):
+    """Durable local evidence could not be persisted after bounded retries."""
+
+
 class NHRConnectionError(NHRError):
     """The instrument could not be reached or the session was lost."""
 

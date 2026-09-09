@@ -171,6 +171,20 @@ def test_approved_workflow_api_preflights_runs_and_is_idempotent(tmp_path) -> No
         )
         assert preflight["passed"] is True
         assert preflight["checks"]["final_safe_state_verified"] is True
+        preflight_report = json.loads(
+            Path(preflight["report_path"]).read_text(encoding="utf-8")
+        )
+        assert preflight_report["simulator_initial_state"] == {
+            "policy": "reset_from_profile",
+            "configured_voltage_v": 90.0,
+            "actual_initial_voltage_v": 90.0,
+        }
+        assert client.configuration()["instruments"][0][
+            "simulator_initial_state_policy"
+        ] == "reset_from_profile"
+        backend = manager.get("sim-remote").instrument._backend
+        assert backend.initial_voltage_v == 90.0
+        assert backend._voltage_v == pytest.approx(90.0)
 
         request_id = str(uuid.uuid4())
         first = client.start_workflow(
@@ -194,6 +208,16 @@ def test_approved_workflow_api_preflights_runs_and_is_idempotent(tmp_path) -> No
             "reconnected": True,
         }
         assert Path(final["report_path"]).is_file()
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        manifest = json.loads(
+            Path(report["artifact_manifest_path"]).read_text(encoding="utf-8")
+        )
+        assert {item["role"] for item in manifest["artifacts"]} >= {
+            "report",
+            "workflow_profile",
+            "workflow_sequence",
+            "workflow_stage",
+        }
         assert manager.get("sim-remote").collector.running is True
         profile.write_bytes(profile.read_bytes() + b"\n")
         after_drift = client.start_workflow(
@@ -244,8 +268,12 @@ def test_workflow_exclusivity_and_idempotent_stop(tmp_path) -> None:
 
         stopped = client.stop_workflow("sim-remote", first["run_id"])
         assert stopped["stop_requested"] is True
+        assert stopped["stop_accepted"] is True
+        assert stopped["already_requested"] is False
         repeated = client.stop_workflow("sim-remote", first["run_id"])
         assert repeated["run_id"] == first["run_id"]
+        assert repeated["stop_accepted"] is False
+        assert repeated["already_requested"] is True
         final = _wait_terminal(client, first["run_id"])
         assert final["state"] == "stopped"
         assert final["final_safe_state"]["verified"] is True

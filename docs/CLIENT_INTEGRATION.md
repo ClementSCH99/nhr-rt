@@ -1,5 +1,11 @@
 # 64-bit client integration
 
+For interactive discovery, `help(NHRServiceClient)` and
+`help(NHRServiceClient.wait_workflow)` describe ownership and timeout behavior.
+Prefer `detach_observer()` over the deprecated, easily misunderstood
+`disconnect()` alias, and `stop_legacy_routine()` when maintaining primitive
+routine clients.
+
 Install the service with 32-bit Python and the base client package in the
 64-bit application. The base package has no IVI dependency.
 

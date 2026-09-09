@@ -22,6 +22,7 @@ from .acquisition import AcquisitionCollector
 from .backends.ivi import DEFAULT_DRIVER_DLL, IVIBackend
 from .backends.simulator import SimulatedBackend
 from .errors import NHRError, NHRPolicyError, NHRStateError, NHRValidationError
+from .evidence import check_output_directory
 from .instrument import NHR9300
 from .interlocks import StaticInterlockProvider
 from .observability import (
@@ -30,11 +31,34 @@ from .observability import (
     RuntimeEventPublisher,
 )
 from .routines import RoutineRunner, routine_from_mapping
-from .types import OperatingState, SafetyLimits, Setpoints, to_jsonable
+from .types import (
+    InstrumentStatus,
+    OperatingState,
+    SafetyLimits,
+    Setpoints,
+    to_jsonable,
+)
 from .workflow_registry import WorkflowRegistry
 from .workflow_runs import WorkflowRunController
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _status_payload(status: Any) -> dict[str, Any]:
+    """Serialize status with both stable numeric and beginner-friendly names."""
+    payload = to_jsonable(status)
+    try:
+        payload["state_name"] = OperatingState(int(payload["state"])).name
+    except (KeyError, TypeError, ValueError):
+        payload["state_name"] = "UNKNOWN"
+    if isinstance(payload.get("setpoints"), dict):
+        try:
+            payload["setpoints"]["state_name"] = OperatingState(
+                int(payload["setpoints"]["state"])
+            ).name
+        except (KeyError, TypeError, ValueError):
+            payload["setpoints"]["state_name"] = "UNKNOWN"
+    return payload
 
 
 class LocalThreadingHTTPServer(ThreadingHTTPServer):
@@ -110,6 +134,7 @@ class ManagedInstrument:
     primitive_compatibility_control: bool = False
     remote_workflow_control: bool = False
     controlled_stop_timeout_s: float | None = None
+    simulator_initial_state_policy: str | None = None
     workflow_controller: WorkflowRunController | None = None
     event_broker: RuntimeEventBroker | None = None
     event_publisher: RuntimeEventPublisher | None = None
@@ -237,6 +262,7 @@ class InstrumentManager:
         self.config_path = config_path
         self.listen_url = listen_url
         output_dir = Path(str(config.get("output_dir", "runs")))
+        self.output_dir_diagnostic = check_output_directory(output_dir)
         backend_names: dict[str, str] = {}
         for item in config.get("instruments", []):
             instrument_id = str(item["id"])
@@ -253,6 +279,16 @@ class InstrumentManager:
                 )
             else:
                 raise NHRValidationError(f"Unknown backend: {backend_name}")
+            simulator_policy = None
+            if backend_name == "simulator":
+                simulator_policy = str(
+                    item.get("simulator_initial_state_policy", "reset_from_profile")
+                )
+                if simulator_policy != "reset_from_profile":
+                    raise NHRValidationError(
+                        "simulator_initial_state_policy currently supports only "
+                        "'reset_from_profile'"
+                    )
             primitive_control = item.get(
                 "primitive_compatibility_control", False
             )
@@ -312,6 +348,7 @@ class InstrumentManager:
                 primitive_control,
                 remote_workflow_control,
                 controlled_stop_timeout_s,
+                simulator_policy,
             )
             backend_names[instrument_id] = backend_name
         registry = WorkflowRegistry.from_config(
@@ -335,6 +372,9 @@ class InstrumentManager:
                     else managed.shutdown_timeout_s
                 ),
                 reconnect_after_cleanup=True,
+                simulator_initial_state_policy=(
+                    managed.simulator_initial_state_policy
+                ),
             )
             managed.event_broker = RuntimeEventBroker(
                 managed.instrument.instrument_id,
@@ -423,14 +463,15 @@ class InstrumentManager:
     def runtime_snapshot(self, instrument_id: str) -> dict[str, Any]:
         managed = self.get(instrument_id)
         cached_status = managed.instrument.cached_status()
-        status = to_jsonable(cached_status)
+        status = _status_payload(cached_status) if cached_status is not None else None
         if status is None:
             status = {
                 "instrument_id": instrument_id,
                 "connected": False,
                 "remote": False,
                 "enabled": False,
-                "state": "off",
+                "state": int(OperatingState.OFF),
+                "state_name": OperatingState.OFF.name,
                 "setpoints": None,
                 "last_error": None,
             }
@@ -484,6 +525,7 @@ class InstrumentManager:
                 "connected": status["connected"],
                 "remote": status["remote"],
                 "state": status["state"],
+                "state_name": status["state_name"],
                 "output_enabled": status["enabled"],
                 "setpoints": status["setpoints"],
             },
@@ -528,9 +570,16 @@ class InstrumentManager:
         for instrument_id, managed in self.instruments.items():
             try:
                 status = managed.instrument.read_status()
-                result.append(to_jsonable(status))
+                result.append(_status_payload(status))
             except Exception:
-                result.append({"instrument_id": instrument_id, "connected": False})
+                result.append(
+                    {
+                        "instrument_id": instrument_id,
+                        "connected": False,
+                        "state": int(OperatingState.OFF),
+                        "state_name": "UNKNOWN",
+                    }
+                )
         return result
 
     def configuration(self) -> dict[str, Any]:
@@ -540,10 +589,16 @@ class InstrumentManager:
             "api_versions": ["v1"],
             "legacy_read_routes": True,
             "restart_required_for_config_changes": True,
+            "output_dir_diagnostic": self.output_dir_diagnostic,
             "instruments": [
                 {
                     "instrument_id": instrument_id,
                     "backend": managed.backend_name,
+                    "simulator_initial_state_policy": (
+                        managed.workflow_controller.simulator_initial_state_policy
+                        if managed.workflow_controller is not None
+                        else None
+                    ),
                     "primitive_compatibility_control": (
                         managed.primitive_compatibility_control
                     ),
@@ -601,7 +656,12 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
         return parsed
 
     def _send(self, status: int, payload: Any) -> None:
-        encoded = json.dumps(to_jsonable(payload)).encode("utf-8")
+        serialized = (
+            _status_payload(payload)
+            if isinstance(payload, InstrumentStatus)
+            else to_jsonable(payload)
+        )
+        encoded = json.dumps(serialized).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
@@ -680,7 +740,9 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
                 return
             classify_endpoint("GET", action)
             if action == "status":
-                self._send(HTTPStatus.OK, managed.instrument.read_status())
+                self._send(
+                    HTTPStatus.OK, _status_payload(managed.instrument.read_status())
+                )
             elif action == "measurement":
                 sample = managed.collector.latest
                 measurement = (
@@ -897,6 +959,8 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
                     if run_id is None:
                         raise NHRValidationError("run_id is required")
                     payload, requested = managed.workflow_controller.stop(run_id)
+                    payload["stop_accepted"] = requested
+                    payload["already_requested"] = not requested
                     self._send(
                         HTTPStatus.ACCEPTED if requested else HTTPStatus.OK,
                         payload,

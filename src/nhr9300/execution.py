@@ -13,6 +13,7 @@ from typing import Any, Callable
 from .acquisition import AcquisitionCollector
 from .backends.ivi import IVIBackend
 from .backends.simulator import SimulatedBackend
+from .evidence import atomic_write_json
 from .instrument import NHR9300
 from .interlocks import StaticInterlockProvider
 from .profiles import load_workflow_profile, validate_workflow_profile
@@ -61,10 +62,54 @@ def _require_final_safe(status: Any, watchdog: bool) -> None:
 
 
 def _write_report(path: Path, report: dict[str, Any]) -> None:
-    path.write_text(
-        json.dumps(to_jsonable(report), indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    atomic_write_json(path, report)
+
+
+def _write_artifact_manifest(
+    *, report_path: Path, report: dict[str, Any], instrument_id: str
+) -> Path:
+    """Describe durable files by role so operators need not infer filenames."""
+    artifacts: list[dict[str, Any]] = []
+
+    def add(role: str, raw_path: str | Path, **extra: Any) -> None:
+        path = Path(raw_path).resolve()
+        if not path.is_file():
+            return
+        content = path.read_bytes()
+        artifacts.append(
+            {
+                "role": role,
+                "path": str(path),
+                "instrument_id": instrument_id,
+                "run_id": report["run_id"],
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "size_bytes": len(content),
+                **extra,
+            }
+        )
+
+    add("report", report_path)
+    add("workflow_profile", report["profile_file"])
+    for dynamic in report.get("dynamic_profile_files", []):
+        add("workflow_dynamic_profile", dynamic["path"], stage=dynamic["stage"])
+    sequence = report.get("sequence_result", {})
+    if sequence.get("global_csv_path"):
+        add("workflow_sequence", sequence["global_csv_path"])
+    for index, stage in enumerate(sequence.get("stages", [])):
+        if stage.get("csv_path"):
+            add("workflow_stage", stage["csv_path"], stage_index=index)
+    manifest_path = report_path.with_name("artifacts.json")
+    atomic_write_json(
+        manifest_path,
+        {
+            "schema_version": 1,
+            "instrument_id": instrument_id,
+            "run_id": report["run_id"],
+            "preflight": bool(report.get("preflight_only")),
+            "artifacts": artifacts,
+        },
     )
+    return manifest_path
 
 
 def _dynamic_profile_evidence(configuration: Any) -> list[dict[str, Any]]:
@@ -98,6 +143,7 @@ def execute_workflow_on_runtime(
     reconnect_after_cleanup: bool = False,
     workflow_id: str | None = None,
     bundle_digest: str | None = None,
+    simulator_initial_state_policy: str | None = None,
 ) -> WorkflowOutcome:
     """Execute an approved workflow on a service-owned runtime.
 
@@ -143,6 +189,19 @@ def execute_workflow_on_runtime(
     collector_was_running = collector.running
 
     try:
+        if not hardware and simulator_initial_state_policy == "reset_from_profile":
+            if collector.running:
+                collector.stop()
+            if instrument.connected:
+                instrument.close()
+            instrument.reset_simulator_initial_state(
+                configuration.simulation_initial_voltage_v
+            )
+            report["simulator_initial_state"] = {
+                "policy": simulator_initial_state_policy,
+                "configured_voltage_v": configuration.simulation_initial_voltage_v,
+                "actual_initial_voltage_v": configuration.simulation_initial_voltage_v,
+            }
         instrument.connect()
         collector.start()
         identity = instrument.read_identity()
@@ -280,7 +339,22 @@ def execute_workflow_on_runtime(
             and report.get("final_safe_state_verified", False)
         )
         report["ended_at_utc"] = datetime.now(timezone.utc)
+        report["outcome"] = (
+            "passed"
+            if report["passed"]
+            else "stopped"
+            if report.get("stopped")
+            else "failed"
+        )
+        report["artifact_manifest_path"] = str(
+            report_path.with_name("artifacts.json").resolve()
+        )
         _write_report(report_path, report)
+        _write_artifact_manifest(
+            report_path=report_path,
+            report=report,
+            instrument_id=instrument.instrument_id,
+        )
         if not collector_was_running and collector.running:
             collector.stop()
     return WorkflowOutcome(bool(report["passed"]), report_path.resolve())
@@ -436,5 +510,14 @@ def execute_workflow(request: WorkflowRequest) -> WorkflowOutcome:
             report["close_error"] = f"{type(exc).__name__}: {exc}"
             report["passed"] = False
         report["ended_at_utc"] = datetime.now(timezone.utc)
+        report["outcome"] = "passed" if report["passed"] else "failed"
+        report["artifact_manifest_path"] = str(
+            report_path.with_name("artifacts.json").resolve()
+        )
         _write_report(report_path, report)
+        _write_artifact_manifest(
+            report_path=report_path,
+            report=report,
+            instrument_id=instrument.instrument_id,
+        )
     return WorkflowOutcome(bool(report["passed"]), report_path.resolve())

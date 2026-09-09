@@ -2,7 +2,20 @@
 
 from .backends import SimulatedBackend
 from .acquisition import AcquisitionCollector
-from .client import NHRServiceClient, WorkflowRunSnapshot, WorkflowSummary
+from .client import (
+    ManagedEventObserver,
+    NHRServiceClient,
+    WorkflowRunSnapshot,
+    WorkflowSummary,
+)
+from .errors import (
+    NHRAPIError,
+    NHREvidencePersistenceError,
+    NHRError,
+    NHRProtocolError,
+    NHRTransportError,
+    NHRWorkflowTimeout,
+)
 from .execution import (
     WorkflowOutcome,
     WorkflowRequest,
@@ -55,8 +68,15 @@ __all__ = [
     "InterlockProvider",
     "Measurement",
     "MeasurementSink",
+    "ManagedEventObserver",
+    "NHRAPIError",
+    "NHREvidencePersistenceError",
+    "NHRError",
+    "NHRProtocolError",
     "NHR9300",
     "NHRServiceClient",
+    "NHRTransportError",
+    "NHRWorkflowTimeout",
     "OperatingState",
     "SafetyLimits",
     "SafetyLimitsReadback",

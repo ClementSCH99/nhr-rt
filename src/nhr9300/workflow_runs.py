@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from .acquisition import AcquisitionCollector, AcquisitionSample
 from .errors import NHRPolicyError, NHRStateError, NHRValidationError
+from .evidence import atomic_write_json
 from .execution import execute_workflow_on_runtime
 from .instrument import NHR9300
 from .routines import RoutineRunner
@@ -43,6 +44,7 @@ class WorkflowRunController:
         operation_lock: threading.RLock,
         controlled_stop_timeout_s: float | None,
         reconnect_after_cleanup: bool = True,
+        simulator_initial_state_policy: str | None = None,
     ) -> None:
         self.instrument = instrument
         self.collector = collector
@@ -54,6 +56,7 @@ class WorkflowRunController:
         self.operation_lock = operation_lock
         self.controlled_stop_timeout_s = controlled_stop_timeout_s
         self.reconnect_after_cleanup = reconnect_after_cleanup
+        self.simulator_initial_state_policy = simulator_initial_state_policy
         self._state_lock = threading.RLock()
         self._runs: dict[str, dict[str, Any]] = {}
         self._request_ids: dict[str, str] = {}
@@ -75,13 +78,7 @@ class WorkflowRunController:
 
     def _persist(self, run_id: str) -> None:
         path = self._manifest_path(run_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(
-            json.dumps(to_jsonable(self._public(self._runs[run_id])), indent=2),
-            encoding="utf-8",
-        )
-        temporary.replace(path)
+        atomic_write_json(path, self._public(self._runs[run_id]))
 
     def _recover_manifests(self) -> None:
         if not self.output_dir.exists():
@@ -139,6 +136,7 @@ class WorkflowRunController:
             return self._active_run_id is not None or self._preflight_active
 
     def preflight(self, workflow_id: str, bundle_digest: str) -> dict[str, Any]:
+        """Run synchronous safety/identity checks, but never workflow stages."""
         self._require_enabled()
         entry = self.registry.require(
             self.instrument.instrument_id, workflow_id, bundle_digest
@@ -165,6 +163,7 @@ class WorkflowRunController:
                     reconnect_after_cleanup=self.reconnect_after_cleanup,
                     workflow_id=workflow_id,
                     bundle_digest=bundle_digest,
+                    simulator_initial_state_policy=self.simulator_initial_state_policy,
                 )
         finally:
             with self._state_lock:
@@ -201,6 +200,11 @@ class WorkflowRunController:
         bundle_digest: str,
         operator_acknowledgement: str,
     ) -> tuple[dict[str, Any], bool]:
+        """Reserve the instrument and start a registered workflow thread.
+
+        The boolean is true only when this call created the run; an idempotent
+        retry returns the existing snapshot and false.
+        """
         self._require_enabled()
         if self.hardware:
             if operator_acknowledgement != WORKFLOW_ACKNOWLEDGEMENT:
@@ -378,6 +382,7 @@ class WorkflowRunController:
                     reconnect_after_cleanup=self.reconnect_after_cleanup,
                     workflow_id=entry.workflow_id,
                     bundle_digest=entry.bundle.digest,  # type: ignore[union-attr]
+                    simulator_initial_state_policy=self.simulator_initial_state_policy,
                 )
             report = json.loads(outcome.report_path.read_text(encoding="utf-8"))
             sequence = report.get("sequence_result", {})
@@ -533,6 +538,7 @@ class WorkflowRunController:
         return result
 
     def stop(self, run_id: str) -> tuple[dict[str, Any], bool]:
+        """Set cooperative cancellation and return whether it was newly accepted."""
         with self._state_lock:
             run = self._runs.get(run_id)
             if run is None:

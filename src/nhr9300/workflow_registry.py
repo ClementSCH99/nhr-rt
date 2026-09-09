@@ -63,6 +63,12 @@ def _bundle_digest(files: Mapping[str, bytes]) -> str:
 
 @dataclass(frozen=True, slots=True)
 class WorkflowBundle:
+    """Immutable snapshot of a workflow JSON file and referenced CSV files.
+
+    Use :meth:`load`; do not construct this dataclass manually. ``files`` uses
+    canonical bundle-relative names while ``source_paths`` retains the original
+    local locations. ``digest`` covers the bytes of every member.
+    """
     profile_path: Path
     configuration: WorkflowConfiguration
     files: Mapping[str, bytes]
@@ -71,6 +77,7 @@ class WorkflowBundle:
 
     @classmethod
     def load(cls, profile_path: Path, *, hardware: bool) -> WorkflowBundle:
+        """Validate and snapshot a profile plus every referenced dynamic CSV."""
         source = profile_path.resolve()
         profile_bytes = source.read_bytes()
         logical_csv = _logical_csv_paths(profile_bytes)
@@ -97,6 +104,7 @@ class WorkflowBundle:
         )
 
     def verify_unchanged(self) -> None:
+        """Reject source-file drift relative to the startup snapshot."""
         try:
             observed = {
                 logical: source.read_bytes()
@@ -112,6 +120,7 @@ class WorkflowBundle:
             )
 
     def materialize(self, target: Path) -> Path:
+        """Write the frozen bundle to a new directory and return workflow.json."""
         target.mkdir(parents=True, exist_ok=False)
         for logical, content in self.files.items():
             path = target / Path(logical)

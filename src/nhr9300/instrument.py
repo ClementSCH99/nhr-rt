@@ -161,6 +161,22 @@ class NHR9300:
                 raise
             return self
 
+    def reset_simulator_initial_state(self, initial_voltage_v: float) -> None:
+        """Reset a disconnected simulator before a workflow.
+
+        This deliberately fails for physical backends. Keeping the operation on
+        the facade preserves the rule that workflow code never reaches through
+        :class:`NHR9300` to a backend implementation.
+        """
+        with self._lock:
+            if self._connected:
+                raise NHRStateError("Cannot reset simulator while connected")
+            reset = getattr(self._backend, "reset_initial_state", None)
+            if reset is None:
+                raise NHRStateError("The configured backend is not a simulator")
+            self._start_worker()
+            self._call(reset, float(initial_voltage_v))
+
     def close(self) -> None:
         with self._lock:
             self._armed_until = None
