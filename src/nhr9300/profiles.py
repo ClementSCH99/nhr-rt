@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -13,6 +14,12 @@ from .sequences import (
     load_profile_csv,
 )
 from .errors import NHRValidationError
+from .external_interlocks import (
+    APPLIES,
+    COMPARISONS,
+    SOURCE_ID_PATTERN,
+    ExternalInterlockRule,
+)
 from .routines import Condition, constant_current_hold, constant_power_hold, rest_period
 from .types import OperatingState, SafetyLimits
 
@@ -69,6 +76,7 @@ class WorkflowConfiguration:
     safety_limits: SafetyLimits
     workflow_limits: WorkflowLimits
     stages: tuple[StageProfile, ...]
+    external_interlocks: tuple[ExternalInterlockRule, ...]
     source_path: Path
 
     def sequence(self, *, configure_limits: bool) -> tuple[SequenceStage, ...]:
@@ -178,6 +186,7 @@ def load_workflow_profile(path: str | Path) -> WorkflowConfiguration:
         "test_description", "bench_description", "stop_procedure",
         "expected_resource", "expected_serial_number", "simulation_initial_voltage_v",
         "watchdog_enabled", "safety_limits", "workflow_limits", "stages",
+        "external_interlocks",
     }
     unknown_root = set(root) - allowed_root
     if unknown_root:
@@ -211,6 +220,41 @@ def load_workflow_profile(path: str | Path) -> WorkflowConfiguration:
             )
         except TypeError as exc:
             raise NHRValidationError(f"Invalid stages[{index}]: {exc}") from exc
+    raw_interlocks = root.get("external_interlocks", [])
+    if not isinstance(raw_interlocks, list):
+        raise NHRValidationError("external_interlocks must be an array")
+    interlocks: list[ExternalInterlockRule] = []
+    allowed_rule_fields = {
+        "rule_id", "source_id", "signal", "comparison", "unit", "applies",
+        "max_age_s", "stability_duration_s", "minimum", "maximum", "expected",
+    }
+    for index, raw in enumerate(raw_interlocks):
+        item = dict(_mapping(raw, f"external_interlocks[{index}]"))
+        unknown = set(item) - allowed_rule_fields
+        if unknown:
+            raise NHRValidationError(
+                f"Unknown external_interlocks[{index}] fields: {sorted(unknown)}"
+            )
+        for name in ("rule_id", "source_id", "signal", "comparison", "unit", "applies"):
+            if name not in item or not isinstance(item[name], str):
+                raise NHRValidationError(
+                    f"external_interlocks[{index}].{name} must be a string"
+                )
+        for name in ("max_age_s", "stability_duration_s", "minimum", "maximum"):
+            if name not in item:
+                continue
+            value = item[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise NHRValidationError(
+                    f"external_interlocks[{index}].{name} must be a number"
+                )
+            item[name] = float(value)
+        try:
+            interlocks.append(ExternalInterlockRule(**item))
+        except TypeError as exc:
+            raise NHRValidationError(
+                f"Invalid external_interlocks[{index}]: {exc}"
+            ) from exc
     try:
         return WorkflowConfiguration(
             test_description=str(root.get("test_description", "")),
@@ -223,6 +267,7 @@ def load_workflow_profile(path: str | Path) -> WorkflowConfiguration:
             safety_limits=limits,
             workflow_limits=workflow,
             stages=tuple(stages),
+            external_interlocks=tuple(interlocks),
             source_path=source,
         )
     except (TypeError, ValueError) as exc:
@@ -245,6 +290,77 @@ def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware:
         _positive(value, name)
     if not configuration.stages:
         raise NHRValidationError("At least one stage is required")
+
+    rule_ids: set[str] = set()
+    for rule in configuration.external_interlocks:
+        if not rule.rule_id.strip() or rule.rule_id in rule_ids:
+            raise NHRValidationError(
+                "External interlock rule_id values must be non-empty and unique"
+            )
+        rule_ids.add(rule.rule_id)
+        if not rule.source_id.strip() or not rule.signal.strip() or not rule.unit.strip():
+            raise NHRValidationError(
+                f"External interlock {rule.rule_id!r} requires source_id, signal and unit"
+            )
+        if not SOURCE_ID_PATTERN.fullmatch(rule.source_id):
+            raise NHRValidationError(
+                f"External interlock {rule.rule_id!r} has invalid source_id"
+            )
+        if rule.comparison not in COMPARISONS:
+            raise NHRValidationError(
+                f"External interlock {rule.rule_id!r} has unsupported comparison"
+            )
+        if rule.applies not in APPLIES:
+            raise NHRValidationError(
+                f"External interlock {rule.rule_id!r} has unsupported applies value"
+            )
+        if rule.max_age_s <= 0 or not math.isfinite(rule.max_age_s):
+            raise NHRValidationError(
+                f"External interlock {rule.rule_id!r} max_age_s must be finite and positive"
+            )
+        if (
+            rule.stability_duration_s < 0
+            or not math.isfinite(rule.stability_duration_s)
+        ):
+            raise NHRValidationError(
+                f"External interlock {rule.rule_id!r} stability_duration_s must be finite and non-negative"
+            )
+        if rule.comparison == "equals":
+            if not isinstance(rule.expected, bool):
+                raise NHRValidationError(
+                    f"External interlock {rule.rule_id!r} equals requires boolean expected"
+                )
+            if rule.minimum is not None or rule.maximum is not None:
+                raise NHRValidationError(
+                    f"External interlock {rule.rule_id!r} equals cannot define numeric bounds"
+                )
+        else:
+            if rule.expected is not None:
+                raise NHRValidationError(
+                    f"External interlock {rule.rule_id!r} numeric rule cannot define expected"
+                )
+            for value, name in ((rule.minimum, "minimum"), (rule.maximum, "maximum")):
+                if value is not None and not math.isfinite(float(value)):
+                    raise NHRValidationError(
+                        f"External interlock {rule.rule_id!r} {name} must be finite"
+                    )
+            if rule.comparison == "minimum" and rule.minimum is None:
+                raise NHRValidationError(
+                    f"External interlock {rule.rule_id!r} requires minimum"
+                )
+            if rule.comparison == "maximum" and rule.maximum is None:
+                raise NHRValidationError(
+                    f"External interlock {rule.rule_id!r} requires maximum"
+                )
+            if rule.comparison == "range":
+                if rule.minimum is None or rule.maximum is None:
+                    raise NHRValidationError(
+                        f"External interlock {rule.rule_id!r} range requires minimum and maximum"
+                    )
+                if rule.minimum > rule.maximum:
+                    raise NHRValidationError(
+                        f"External interlock {rule.rule_id!r} minimum exceeds maximum"
+                    )
     if sum(stage.duration_s for stage in configuration.stages) > workflow.max_sequence_duration_s:
         raise NHRValidationError("Sequence duration exceeds max_sequence_duration_s")
 

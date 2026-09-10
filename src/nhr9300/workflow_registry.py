@@ -158,6 +158,9 @@ class WorkflowRegistryEntry:
                 configuration.test_description if configuration else None
             ),
             "stage_count": len(configuration.stages) if configuration else 0,
+            "external_interlock_count": (
+                len(configuration.external_interlocks) if configuration else 0
+            ),
         }
 
 

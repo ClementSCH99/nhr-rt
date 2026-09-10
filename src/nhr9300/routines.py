@@ -269,6 +269,7 @@ class RoutineRunner:
         manage_collector: bool = True,
         stop_event: threading.Event | None = None,
         progress_callback: Callable[[str, str], None] | None = None,
+        failure_handler: Callable[[Exception], bool] | None = None,
     ) -> None:
         self.instrument = instrument
         self.collector = collector
@@ -277,6 +278,7 @@ class RoutineRunner:
         self._stop = stop_event or threading.Event()
         self._owns_stop_event = stop_event is None
         self._progress_callback = progress_callback
+        self._failure_handler = failure_handler
         self._thread: threading.Thread | None = None
 
     @property
@@ -370,7 +372,13 @@ class RoutineRunner:
             result.state = RoutineState.STOPPED
             result.reason = str(exc)
         except Exception as exc:
-            result.state = RoutineState.FAILED
+            handled = False
+            if self._failure_handler is not None:
+                try:
+                    handled = self._failure_handler(exc)
+                except Exception:
+                    handled = False
+            result.state = RoutineState.STOPPED if handled else RoutineState.FAILED
             result.reason = str(exc)
             result.errors.append(repr(exc))
         finally:

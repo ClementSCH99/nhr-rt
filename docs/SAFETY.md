@@ -11,8 +11,10 @@ emergency stop, fixture protection or an operator-approved test plan.
 - Approved safety limits are programmed and read back before arm or setpoints.
 - Active writes require a live arm lease, a fresh measurement and safe/fresh
   interlocks.
-- Acquisition or interlock failure requests an emergency stop when the module
-  may be energized.
+- An external interlock failure during an approved workflow requests a
+  controlled stop first. The approved timeout escalates to `emergency_stop` if
+  the workflow does not become terminal. Other acquisition/safety failures
+  retain the immediate emergency-stop response when the module may be energized.
 - Normal completion, failure and interruption converge on zeroed channels,
   disabled output and disabled watchdog, followed by an independent reconnect.
 - Only the 32-bit service owns a physical NHR in the supported architecture.
@@ -35,6 +37,11 @@ External adapters must timestamp the source measurement, not the time it was
 forwarded. They must return unsafe when transport health, decoding, required
 signals or freshness cannot be established. Combining providers never turns an
 unsafe result into a safe one.
+
+Approved workflow rules are typed and covered by the immutable bundle digest.
+Pre-start failures reject start; runtime failures latch until workflow end and
+cannot automatically restart or reset. See
+[External fail-closed interlocks](EXTERNAL_INTERLOCKS.md).
 
 UUT temperature is not considered validated unless a real sensor is wired and
 included in the approved interlock/profile contract.

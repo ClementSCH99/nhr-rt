@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .acquisition import AcquisitionCollector, AcquisitionSample
-from .errors import NHRPolicyError, NHRStateError, NHRValidationError
+from .errors import NHRInterlockError, NHRPolicyError, NHRStateError, NHRValidationError
+from .external_interlocks import ExternalInterlockManager
 from .evidence import atomic_write_json
 from .execution import execute_workflow_on_runtime
 from .instrument import NHR9300
@@ -43,6 +44,7 @@ class WorkflowRunController:
         remote_enabled: bool,
         operation_lock: threading.RLock,
         controlled_stop_timeout_s: float | None,
+        external_interlocks: ExternalInterlockManager,
         reconnect_after_cleanup: bool = True,
         simulator_initial_state_policy: str | None = None,
     ) -> None:
@@ -55,6 +57,7 @@ class WorkflowRunController:
         self.remote_enabled = remote_enabled
         self.operation_lock = operation_lock
         self.controlled_stop_timeout_s = controlled_stop_timeout_s
+        self.external_interlocks = external_interlocks
         self.reconnect_after_cleanup = reconnect_after_cleanup
         self.simulator_initial_state_policy = simulator_initial_state_policy
         self._state_lock = threading.RLock()
@@ -147,6 +150,8 @@ class WorkflowRunController:
             self._preflight_done.clear()
         preflight_id = f"preflight-{_utc_now().strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
         target = self.output_dir.parent / "workflow-preflights" / preflight_id
+        rules = entry.bundle.configuration.external_interlocks  # type: ignore[union-attr]
+        self.external_interlocks.activate(rules, phase="pre_start")
         try:
             with self.operation_lock:
                 self.instrument.connect()
@@ -164,8 +169,10 @@ class WorkflowRunController:
                     workflow_id=workflow_id,
                     bundle_digest=bundle_digest,
                     simulator_initial_state_policy=self.simulator_initial_state_policy,
+                    external_interlock_evidence=self.external_interlocks.status,
                 )
         finally:
+            self.external_interlocks.deactivate()
             with self._state_lock:
                 self._preflight_active = False
                 self._preflight_done.set()
@@ -188,6 +195,7 @@ class WorkflowRunController:
                 "final_safe_state_verified": report.get(
                     "final_safe_state_verified", False
                 ),
+                "external_interlocks": report.get("external_interlocks"),
             },
             "error": report.get("error") or report.get("cleanup_error"),
         }
@@ -251,6 +259,16 @@ class WorkflowRunController:
                     "An interrupted run requires a successful preflight before restart"
                 )
             self._require_available()
+            rules = entry.bundle.configuration.external_interlocks  # type: ignore[union-attr]
+            self.external_interlocks.activate(
+                rules, phase="pre_start", latch_runtime=True
+            )
+            try:
+                self.external_interlocks.require_safe()
+            except Exception:
+                self.external_interlocks.deactivate()
+                raise
+            self.external_interlocks.set_phase("runtime")
             run_id = str(uuid.uuid4())
             run = {
                 "run_id": run_id,
@@ -274,6 +292,7 @@ class WorkflowRunController:
                     "energy_discharge_wh": 0.0,
                 },
                 "stop_requested": False,
+                "stop_cause": None,
                 "emergency_fallback_requested": False,
                 "report_path": str((self._run_dir(run_id) / "report.json").resolve()),
                 "final_safe_state": {"verified": False},
@@ -383,6 +402,10 @@ class WorkflowRunController:
                     workflow_id=entry.workflow_id,
                     bundle_digest=entry.bundle.digest,  # type: ignore[union-attr]
                     simulator_initial_state_policy=self.simulator_initial_state_policy,
+                    external_interlock_evidence=lambda: self._interlock_evidence(
+                        run_id
+                    ),
+                    runtime_safety_failure=self.handle_runtime_failure,
                 )
             report = json.loads(outcome.report_path.read_text(encoding="utf-8"))
             sequence = report.get("sequence_result", {})
@@ -434,6 +457,7 @@ class WorkflowRunController:
             )
         finally:
             self.collector.remove_callback(callback)
+            self.external_interlocks.deactivate()
             with self._state_lock:
                 if self._active_run_id == run_id:
                     self._active_run_id = None
@@ -537,7 +561,13 @@ class WorkflowRunController:
         result["progress_available"] = result.get("progress") is not None
         return result
 
-    def stop(self, run_id: str) -> tuple[dict[str, Any], bool]:
+    def stop(
+        self,
+        run_id: str,
+        *,
+        origin: str = "operator",
+        cause: Mapping[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], bool]:
         """Set cooperative cancellation and return whether it was newly accepted."""
         with self._state_lock:
             run = self._runs.get(run_id)
@@ -548,6 +578,12 @@ class WorkflowRunController:
             first_request = not run["stop_requested"]
             run["stop_requested"] = True
             run["state"] = "stop_requested"
+            if first_request:
+                run["stop_cause"] = {
+                    "origin": origin,
+                    "requested_at_utc": _utc_now(),
+                    "detail": dict(cause or {}),
+                }
             self._stops[run_id].set()
             self._persist(run_id)
             if first_request and self.controlled_stop_timeout_s is not None:
@@ -583,6 +619,37 @@ class WorkflowRunController:
                     f"{type(exc).__name__}: {exc}"
                 )
                 self._persist(run_id)
+
+    def _interlock_evidence(self, run_id: str) -> dict[str, Any]:
+        with self._state_lock:
+            run = self._runs.get(run_id, {})
+            stop_cause = run.get("stop_cause")
+            emergency_fallback_requested = run.get(
+                "emergency_fallback_requested", False
+            )
+        return {
+            **self.external_interlocks.status(),
+            "stop_cause": stop_cause,
+            "emergency_fallback_requested": emergency_fallback_requested,
+        }
+
+    def handle_runtime_failure(self, error: Exception) -> bool:
+        """Route external interlock faults through controlled workflow stop."""
+        if not isinstance(error, NHRInterlockError):
+            return False
+        status = self.external_interlocks.status()
+        if not status["latched"]:
+            return False
+        with self._state_lock:
+            run_id = self._active_run_id
+        if run_id is None:
+            return False
+        _, requested = self.stop(
+            run_id,
+            origin="external_interlock",
+            cause={"results": status["results"], "sources": status["sources"]},
+        )
+        return requested or self._stops[run_id].is_set()
 
     def _accumulate(self, run_id: str, sample: AcquisitionSample) -> None:
         measurement = sample.measurement

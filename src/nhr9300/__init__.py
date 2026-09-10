@@ -22,6 +22,7 @@ from .execution import (
     execute_workflow,
     execute_workflow_on_runtime,
 )
+from .external_interlocks import ExternalInterlockManager, ExternalInterlockRule
 from .cc_profiles import (
     CCHoldProfile,
     CCProfileConfiguration,
@@ -62,6 +63,8 @@ __all__ = [
     "CCHoldProfile",
     "CCProfileConfiguration",
     "CsvMeasurementSink",
+    "ExternalInterlockManager",
+    "ExternalInterlockRule",
     "Identity",
     "CompositeInterlockProvider",
     "InstrumentStatus",

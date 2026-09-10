@@ -1092,11 +1092,16 @@ Inspect the persisted run state and service startup logs. Confirm physical safe
 state independently. Complete the required recovery preflight before starting a
 new workflow; do not simply delete evidence or reuse the old request ID.
 
-### External sources say `not_configured`
+### External sources say `inactive`, unsafe or stale
 
-They are not active protections. If a workflow requires CAN, SoP or another
-external input, configure and validate that source explicitly. Do not interpret
-an absent source as a satisfied limit.
+`inactive` means no workflow rule is currently active; it does not mean an
+available source is safe. Before preflight/start, publish a complete fresh
+snapshot for every required source and wait any approved stability duration.
+An unsafe, rejected, missing or stale required value fails closed. During a
+workflow it requests controlled stop and remains latched until workflow end.
+Inspect `client.interlocks()`, the terminal run and `report.json`; do not infer
+safe state from a recovered CAN value or SSE EOF. See
+[External fail-closed interlocks](EXTERNAL_INTERLOCKS.md).
 
 ## 22. Safe exception handling pattern
 

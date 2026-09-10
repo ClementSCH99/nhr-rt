@@ -1,10 +1,10 @@
 # NHR Remote Testing roadmap
 
-**Last updated:** August 27, 2026
+**Last updated:** September 9, 2026
 
 **Current release:** v0.2.0
 
-**Current phase:** Operator proficiency exercises after Milestones 1–4 validation
+**Current phase:** Milestone 5 external-integration and physical-validation planning
 
 **Target release:** v0.3.0
 
@@ -23,8 +23,9 @@ behavior and the selected physical workflows were validated through Session 5.
 Expansion Phase 2 makes those capabilities safely usable by 64-bit
 applications. Milestones 1–4 established remote orchestration and the read-only
 operator interface without moving hardware authority outside `nhr-rt`.
-Milestones 5–7 remain the future external-safety, dynamic-limit and release
-work.
+Milestone 5 now implements the external-safety contract in software. Its real
+CAN/BMS and physical-stop validation remains gated. Milestones 6–7 remain the
+future dynamic-limit and release work.
 
 The target system uses shared authority rather than one universal master:
 
@@ -249,6 +250,10 @@ PowerPanel as the primary live display.
 - opening, refreshing or closing the monitor does not change NHR state.
 
 ## Milestone 5 — External fail-closed interlocks
+
+**Status:** software implementation and simulator validation complete as of
+September 9, 2026. Real CAN/BMS integration, threshold approval and physical
+stop-time validation remain future supervised gates.
 
 ### Outcome
 

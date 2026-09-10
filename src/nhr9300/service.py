@@ -23,6 +23,7 @@ from .backends.ivi import DEFAULT_DRIVER_DLL, IVIBackend
 from .backends.simulator import SimulatedBackend
 from .errors import NHRError, NHRPolicyError, NHRStateError, NHRValidationError
 from .evidence import check_output_directory
+from .external_interlocks import ExternalInterlockManager
 from .instrument import NHR9300
 from .interlocks import StaticInterlockProvider
 from .observability import (
@@ -42,6 +43,7 @@ from .workflow_registry import WorkflowRegistry
 from .workflow_runs import WorkflowRunController
 
 LOGGER = logging.getLogger(__name__)
+MAX_JSON_BODY_BYTES = 256 * 1024
 
 
 def _status_payload(status: Any) -> dict[str, Any]:
@@ -72,6 +74,7 @@ class EndpointClass(str, Enum):
 
     READ_ONLY = "read_only"
     APPROVED_WORKFLOW_CONTROL = "approved_workflow_control"
+    EXTERNAL_SNAPSHOT_CONTROL = "external_snapshot_control"
     PRIMITIVE_COMPATIBILITY_CONTROL = "primitive_compatibility_control"
 
 
@@ -85,6 +88,7 @@ READ_ONLY_ACTIONS = {
     "stream",
     "runtime",
     "events",
+    "interlocks",
 }
 PRIMITIVE_ACTIONS = {
     "connect",
@@ -118,6 +122,8 @@ def classify_endpoint(method: str, action: str) -> EndpointClass:
         return EndpointClass.READ_ONLY
     if normalized_method == "POST" and action in PRIMITIVE_ACTIONS:
         return EndpointClass.PRIMITIVE_COMPATIBILITY_CONTROL
+    if normalized_method == "PUT" and action == "external-snapshot":
+        return EndpointClass.EXTERNAL_SNAPSHOT_CONTROL
     if action in APPROVED_WORKFLOW_ACTIONS:
         return EndpointClass.APPROVED_WORKFLOW_CONTROL
     raise NHRValidationError(
@@ -131,6 +137,7 @@ class ManagedInstrument:
     collector: AcquisitionCollector
     runner: RoutineRunner
     backend_name: str
+    external_interlocks: ExternalInterlockManager
     primitive_compatibility_control: bool = False
     remote_workflow_control: bool = False
     controlled_stop_timeout_s: float | None = None
@@ -330,10 +337,11 @@ class InstrumentManager:
             interlock = StaticInterlockProvider(
                 safe=bool(item.get("operator_supervised", backend_name == "simulator"))
             )
+            external_interlocks = ExternalInterlockManager()
             instrument = NHR9300(
                 instrument_id,
                 backend,
-                interlocks=[interlock],
+                interlocks=[interlock, external_interlocks],
             )
             collector = AcquisitionCollector(
                 instrument,
@@ -345,6 +353,7 @@ class InstrumentManager:
                 collector,
                 RoutineRunner(instrument, collector, manage_collector=False),
                 backend_name,
+                external_interlocks,
                 primitive_control,
                 remote_workflow_control,
                 controlled_stop_timeout_s,
@@ -375,6 +384,7 @@ class InstrumentManager:
                 simulator_initial_state_policy=(
                     managed.simulator_initial_state_policy
                 ),
+                external_interlocks=managed.external_interlocks,
             )
             managed.event_broker = RuntimeEventBroker(
                 managed.instrument.instrument_id,
@@ -390,6 +400,9 @@ class InstrumentManager:
             managed.collector.add_error_callback(
                 lambda _error, target=event_publisher: target.submit(None)
             )
+            managed.collector.set_safety_failure_handler(
+                managed.workflow_controller.handle_runtime_failure
+            )
 
     @staticmethod
     def _publish_runtime_updates(managed: ManagedInstrument, sample: Any) -> None:
@@ -401,7 +414,14 @@ class InstrumentManager:
         if managed.workflow_controller is not None:
             broker.publish("workflow", managed.workflow_controller.runtime_snapshot())
         safety = managed.instrument.observability_state()
-        broker.publish("interlock", {"results": safety["interlocks"]})
+        broker.publish(
+            "interlock",
+            {
+                "instrument_id": managed.instrument.instrument_id,
+                "external_sources": managed.external_interlocks.status(),
+                "results": safety["interlocks"],
+            },
+        )
         broker.publish(
             "limit",
             InstrumentManager._power_limit_snapshot(safety.get("safety_limits")),
@@ -547,17 +567,33 @@ class InstrumentManager:
             },
             "workflow": workflow,
             "totals": totals,
-            "external_sources": {
-                "status": "not_configured",
-                "sources": [],
-                "note": "Reserved for Milestone 5 external snapshot contract",
-            },
+            "external_sources": managed.external_interlocks.status(),
             "interlocks": {"results": safety["interlocks"]},
             "effective_power_limits": self._power_limit_snapshot(
                 safety.get("safety_limits")
             ),
             "alerts": self._alerts(managed, safety),
         }
+
+    def interlock_snapshot(self, instrument_id: str) -> dict[str, Any]:
+        managed = self.get(instrument_id)
+        safety = managed.instrument.observability_state()
+        return {
+            "instrument_id": instrument_id,
+            "external_sources": managed.external_interlocks.status(),
+            "results": safety["interlocks"],
+        }
+
+    def submit_external_snapshot(
+        self, instrument_id: str, source_id: str, body: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        managed = self.get(instrument_id)
+        snapshot = managed.external_interlocks.submit(source_id, body)
+        if managed.event_broker is not None:
+            managed.event_broker.publish(
+                "interlock", self.interlock_snapshot(instrument_id)
+            )
+        return snapshot
 
     def get(self, instrument_id: str) -> ManagedInstrument:
         try:
@@ -647,7 +683,16 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
         return
 
     def _json_body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise NHRValidationError("Content-Length must be an integer") from exc
+        if length < 0:
+            raise NHRValidationError("Content-Length must be non-negative")
+        if length > MAX_JSON_BODY_BYTES:
+            raise NHRValidationError(
+                f"JSON body exceeds the {MAX_JSON_BODY_BYTES}-byte limit"
+            )
         if length == 0:
             return {}
         parsed = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -698,7 +743,9 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] == "instruments":
             return parts[1], "status", None
         if len(parts) == 3 and parts[0] == "instruments":
-            if parts[2] in {"workflows", "workflow-runs", "runtime", "events"}:
+            if parts[2] in {
+                "workflows", "workflow-runs", "runtime", "events", "interlocks"
+            }:
                 if not versioned:
                     return None, None, None
                 return parts[1], parts[2], None
@@ -720,6 +767,14 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
             and parts[4] == "stop"
         ):
             return parts[1], "workflow-stop", parts[3]
+        if (
+            versioned
+            and len(parts) == 5
+            and parts[0] == "instruments"
+            and parts[2] == "external-sources"
+            and parts[4] == "snapshot"
+        ):
+            return parts[1], "external-snapshot", parts[3]
         return None, None, None
 
     def do_GET(self) -> None:
@@ -768,6 +823,11 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
                 )
             elif action == "events":
                 self._events(managed)
+            elif action == "interlocks":
+                self._send(
+                    HTTPStatus.OK,
+                    self.manager.interlock_snapshot(instrument_id),
+                )
             elif action == "workflows":
                 classify_endpoint("GET", action)
                 assert managed.workflow_controller is not None
@@ -778,6 +838,21 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.OK, managed.workflow_controller.get(run_id))
             else:
                 self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+        except Exception as exc:
+            self._error(exc)
+
+    def do_PUT(self) -> None:
+        try:
+            instrument_id, action, source_id = self._route()
+            if instrument_id is None or action != "external-snapshot" or source_id is None:
+                self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+                return
+            classify_endpoint("PUT", action)
+            body = self._json_body()
+            payload = self.manager.submit_external_snapshot(
+                instrument_id, source_id, body
+            )
+            self._send(HTTPStatus.OK, payload)
         except Exception as exc:
             self._error(exc)
 
@@ -795,7 +870,9 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             initial = self.manager.runtime_snapshot(instrument_id)
             broker.publish("workflow", initial["workflow"])
-            broker.publish("interlock", initial["interlocks"])
+            broker.publish(
+                "interlock", self.manager.interlock_snapshot(instrument_id)
+            )
             broker.publish("limit", initial["effective_power_limits"])
             if initial["alerts"]:
                 broker.publish("alert", {"active": initial["alerts"]})

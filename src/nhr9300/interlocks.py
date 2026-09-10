@@ -63,7 +63,9 @@ def validate_interlocks(
     failed = [
         signal
         for signal in signals
-        if not signal.safe or checked_at - signal.timestamp_monotonic > max_age_s
+        if not signal.safe
+        or checked_at - signal.timestamp_monotonic
+        > (signal.max_age_s if signal.max_age_s is not None else max_age_s)
     ]
     if failed:
         details = ", ".join(

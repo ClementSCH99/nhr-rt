@@ -25,6 +25,7 @@ localhost HTTP/SSE contract.
 | `backends` | Hardware protocol plus IVI and simulator implementations |
 | `instrument` | Serialized backend access, safety limits, arm lease, interlocks and safe state |
 | `interlocks` | Fail-closed provider contract and provider composition |
+| `external_interlocks` | Snapshot validation, freshness, typed rule evaluation and runtime latching |
 | `acquisition` | Timed measurement collection and in-memory publication |
 | `sinks` | Persistence destinations that never access the instrument |
 | `routines` | Conditions, steps, routine factories and single-routine execution |
@@ -44,9 +45,10 @@ on the service path and does not import a client or UI.
 
 ## Extension boundaries
 
-- External BMS/CAN logic implements `InterlockProvider` or supplies snapshots
-  through `CallbackInterlockProvider`. Missing, unsafe, and stale data fail
-  closed in the instrument safety check.
+- External BMS/CAN processes publish decoded snapshots through the versioned
+  service API. The service-owned `ExternalInterlockManager` adapts approved
+  workflow rules to `InterlockProvider`; missing, unsafe, rejected and stale
+  data fail closed inside the instrument safety path.
 - Advanced logging implements `MeasurementSink`. Sinks receive normalized rows
   and cannot block or call hardware APIs.
 - A future GUI or 64-bit command client uses the existing service contract. It

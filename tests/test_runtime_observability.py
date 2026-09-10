@@ -50,7 +50,7 @@ def test_runtime_snapshot_is_read_only_and_explicit_before_connection(tmp_path) 
         assert snapshot["measurement"]["available"] is False
         assert snapshot["workflow"]["state"] == "idle"
         assert snapshot["workflow"]["progress_available"] is False
-        assert snapshot["external_sources"]["status"] == "not_configured"
+        assert snapshot["external_sources"]["status"] == "inactive"
         assert snapshot["effective_power_limits"]["configured"] is False
         assert manager.get("sim-runtime").instrument.connected is False
     finally:
@@ -174,7 +174,9 @@ def test_managed_runtime_observer_owns_thread_and_can_refresh(tmp_path) -> None:
         with client.observe_events("sim-runtime") as observer:
             event = observer.get(timeout_s=2)
             assert event["event"] in EVENT_TYPES
-            assert observer.last_sequence == event["sequence"]
+            # The background reader may already have queued a newer event by
+            # the time the consumer removes the first one.
+            assert observer.last_sequence >= event["sequence"]
             observer.needs_runtime_refresh = True
             assert observer.refresh_runtime()["schema_version"] == "1.0"
             assert observer.needs_runtime_refresh is False

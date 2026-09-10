@@ -22,7 +22,7 @@ Every snapshot contains:
 | `acquisition` | Active/health state, requested and observed rate, sample count, absolute evidence path and error |
 | `workflow` | Active run identity/state, stage, step, termination, report path, totals and progress when available |
 | `totals` | Latest NHR charge/discharge Ah and Wh counters; unavailable counters are `null` |
-| `external_sources` | Explicitly `not_configured` until the Milestone 5 contract is implemented |
+| `external_sources` | M5 source health, sequence, UTC/receive timestamps, age, active phase, rule results and latch state |
 | `interlocks` | Current provider results with safe/fresh decisions, monotonic age and allowed age |
 | `effective_power_limits` | Approved static power limits when configured; external contribution remains `not_configured` until Milestone 6 |
 | `alerts` | Active acquisition and interlock faults known at snapshot time |
@@ -69,9 +69,19 @@ acquisition failures remain logged; acquisition failures also appear in the
 runtime alert set. Service shutdown closes the event broker so handlers can
 leave their bounded queue wait.
 
-## Explicitly reserved work
+## External interlocks and reserved work
 
-Milestone 3 does not accept external source snapshots, evaluate external rules,
-or apply a dynamic SoP envelope. Their schema positions are explicit so a
-read-only client can distinguish `not_configured` from healthy or stale data,
-but only Milestones 5 and 6 can give those fields safety meaning.
+Milestone 5 gives `external_sources` and external `interlocks` safety meaning.
+When no workflow rules are active, source status is `inactive`; this is not a
+safe decision. During pre-start/runtime, the snapshot reports `configured`, the
+active phase and latched failures. See
+[EXTERNAL_INTERLOCKS.md](EXTERNAL_INTERLOCKS.md).
+
+All SSE `interlock` events share one payload: `instrument_id`,
+`external_sources` and `results`. A latched external rule result carries the
+exact triggering `source_sequence`, `source_timestamp_utc`,
+`source_received_at_utc` and `source_age_s_at_evaluation`; the live source list
+may legitimately show a newer snapshot.
+
+The dynamic SoP envelope remains reserved for Milestone 6, so its external
+contribution continues to report `not_configured`.

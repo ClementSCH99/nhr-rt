@@ -365,12 +365,14 @@ class SequenceRunner:
         manage_collector: bool = True,
         stop_event: threading.Event | None = None,
         progress_callback: Callable[[int, SequenceStage, str | None], None] | None = None,
+        failure_handler: Callable[[Exception], bool] | None = None,
     ) -> None:
         self.instrument = instrument
         self.collector = collector
         self.manage_collector = manage_collector
         self.stop_event = stop_event or threading.Event()
         self.progress_callback = progress_callback
+        self.failure_handler = failure_handler
 
     def run(self, stages: Sequence[SequenceStage]) -> SequenceResult:
         if not stages:
@@ -401,6 +403,7 @@ class SequenceRunner:
                             else None
                         )
                     ),
+                    failure_handler=self.failure_handler,
                 ).run(stage.routine)
                 result.stages.append(stage_result)
                 if stage_result.state != RoutineState.PASSED:

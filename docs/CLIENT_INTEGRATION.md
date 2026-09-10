@@ -45,9 +45,10 @@ HTTP/SSE endpoints and their JSON fields. Internal module paths are not a
 cross-project API. During v0.2.x the established top-level workflow aliases are
 retained while generic names become canonical.
 
-Until external interlocks are validated, remote write methods must remain
-operator-controlled. A transport failure is not proof that hardware is safe;
-query status/acquisition again or use independent local verification.
+The external-snapshot PUT updates decoded data only and has no NHR hardware
+authority. Workflow starts and primitive writes retain their existing gates. A
+transport failure is not proof that hardware is safe; query runtime/interlocks
+again or use independent local verification.
 
 See [Service authority contract](SERVICE_AUTHORITY.md) for endpoint
 classification, primitive compatibility policy and shutdown behavior.
@@ -105,5 +106,7 @@ event stream is bounded and may report `dropped_before`; refresh `runtime()`
 after any gap. Do not calculate a workflow percentage when
 `progress_available` is false or `progress.percent` is `null`.
 
-The complete versioned schema and reserved Milestone 5/6 fields are documented
-in [RUNTIME_OBSERVABILITY.md](RUNTIME_OBSERVABILITY.md).
+The runtime schema is documented in
+[RUNTIME_OBSERVABILITY.md](RUNTIME_OBSERVABILITY.md). Snapshot publication,
+typed rules, latching and stop behavior are documented in
+[EXTERNAL_INTERLOCKS.md](EXTERNAL_INTERLOCKS.md).

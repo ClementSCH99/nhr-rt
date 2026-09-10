@@ -66,6 +66,13 @@ start with the same request UUID and bundle returns the original run. Stop is
 idempotent. Non-terminal manifests found after restart become `interrupted` and
 block new starts until a successful preflight verifies the runtime again.
 
+An approved profile may include `external_interlocks`. Their source IDs,
+signals, comparisons, SI units, phases, freshness bounds and optional safe
+stability duration are part of `workflow.json` and therefore part of the
+immutable bundle digest. See
+[External fail-closed interlocks](EXTERNAL_INTERLOCKS.md) for the schema and
+runtime stop contract.
+
 `nhr9300-run` executes a validated JSON workflow in simulation or on a
 supervised physical module. Supported stages are constant current, CCCV,
 constant power, rest and signed current/power CSV profiles.
@@ -109,4 +116,6 @@ the first failed stage.
 Every execution writes a JSON report, one global acquisition CSV and one CSV
 per stage. The report records the exact JSON and dynamic CSV paths, SHA-256,
 identity, requested/read-back limits, termination, acquisition statistics,
-directional Ah/Wh and independently observed final state.
+directional Ah/Wh and independently observed final state. Interlock-enabled
+runs also record external source state, rule results, latch state and the
+structured stop cause.

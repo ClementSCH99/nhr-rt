@@ -154,6 +154,16 @@ class InterlockSignal:
     safe: bool
     timestamp_monotonic: float
     detail: str = ""
+    max_age_s: float | None = None
+    source_id: str | None = None
+    signal: str | None = None
+    value: float | bool | None = None
+    unit: str | None = None
+    reason: str | None = None
+    source_sequence: int | None = None
+    source_timestamp_utc: datetime | None = None
+    source_received_at_utc: datetime | None = None
+    source_age_s_at_evaluation: float | None = None
 
 
 @dataclass(slots=True)

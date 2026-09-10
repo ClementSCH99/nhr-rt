@@ -169,6 +169,32 @@ class NHRServiceClient:
         """Return one read-only consolidated snapshot for UI or recovery logic."""
         return self._request("GET", f"/instruments/{instrument_id}/runtime")
 
+    def interlocks(self, instrument_id: str) -> dict[str, Any]:
+        """Return current static and external interlock decisions."""
+        return self._request("GET", f"/instruments/{instrument_id}/interlocks")
+
+    def submit_external_snapshot(
+        self,
+        instrument_id: str,
+        source_id: str,
+        *,
+        sequence: int,
+        timestamp_utc: str,
+        health: str,
+        signals: dict[str, float | bool],
+    ) -> dict[str, Any]:
+        """Forward decoded external data; this endpoint has no hardware authority."""
+        return self._request(
+            "PUT",
+            f"/instruments/{instrument_id}/external-sources/{source_id}/snapshot",
+            {
+                "sequence": sequence,
+                "timestamp_utc": timestamp_utc,
+                "health": health,
+                "signals": signals,
+            },
+        )
+
     def configure_limits(
         self, instrument_id: str, limits: Mapping[str, Any]
     ) -> dict[str, Any]:

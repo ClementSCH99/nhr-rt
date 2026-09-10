@@ -22,8 +22,9 @@ v0.2.0 read aliases.
 
 | Class | Established endpoints |
 |---|---|
-| Read-only | `GET configuration`, inventory, status, measurement, acquisition, routine status and stream |
+| Read-only | `GET configuration`, inventory, status, measurement, acquisition, routine status, stream, runtime, events and interlocks |
 | Approved-workflow control | Workflow registry, preflight, start, run status and run-specific stop under `/api/v1` |
+| External-snapshot control | `PUT` decoded source snapshots under `/api/v1`; no NHR command authority |
 | Primitive compatibility control | `POST connect`, disconnect, limits, arm, command, original routine and stop |
 
 The versioned form inserts `/api/v1` before the established path. For example,
@@ -82,10 +83,10 @@ bounded sequence:
 7. stop acquisition;
 8. close the service-owned instrument connection.
 
-An active routine stop uses the existing v0.2.0 fail-closed emergency-stop
-behavior. The future approved-workflow API will distinguish controlled stop
-from emergency fallback. Shutdown failures are logged and surfaced; closing
-the listening socket still proceeds.
+An active legacy routine stop uses the existing v0.2.0 fail-closed
+emergency-stop behavior. Approved workflows distinguish controlled stop from
+emergency fallback, including external-interlock stop causes. Shutdown failures
+are logged and surfaced; closing the listening socket still proceeds.
 
 The current software shutdown bound is three seconds. It supports deterministic
 simulator and service cleanup only. It is not an approved physical fallback

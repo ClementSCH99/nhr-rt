@@ -131,10 +131,27 @@ class NHR9300:
                     "name": signal.name,
                     "safe": signal.safe,
                     "fresh": now - signal.timestamp_monotonic
-                    <= interlock_max_age_s,
+                    <= (
+                        signal.max_age_s
+                        if signal.max_age_s is not None
+                        else interlock_max_age_s
+                    ),
                     "age_s": max(0.0, now - signal.timestamp_monotonic),
-                    "max_age_s": interlock_max_age_s,
+                    "max_age_s": (
+                        signal.max_age_s
+                        if signal.max_age_s is not None
+                        else interlock_max_age_s
+                    ),
                     "detail": signal.detail,
+                    "source_id": signal.source_id,
+                    "signal": signal.signal,
+                    "value": signal.value,
+                    "unit": signal.unit,
+                    "reason": signal.reason,
+                    "source_sequence": signal.source_sequence,
+                    "source_timestamp_utc": signal.source_timestamp_utc,
+                    "source_received_at_utc": signal.source_received_at_utc,
+                    "source_age_s_at_evaluation": signal.source_age_s_at_evaluation,
                 }
                 for signal in signals
             ],

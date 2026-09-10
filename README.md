@@ -14,6 +14,8 @@ simulator for software validation.
   measurements without loading the driver.
 - Workflows support CC, CCCV, constant power, rest, ordered sequences and signed
   current/power CSV profiles.
+- Approved workflows can enforce fail-closed voltage, temperature and boolean
+  BMS rules from timestamped external snapshots.
 - Acquisition produces a global CSV, per-stage CSVs and machine-readable JSON
   evidence.
 
@@ -61,6 +63,8 @@ The service listens on `127.0.0.1:9300` by default. Keep it local; it has no
 network authentication boundary. See [64-bit client integration](docs/CLIENT_INTEGRATION.md)
 and the [service authority contract](docs/SERVICE_AUTHORITY.md). Read-only
 applications use the consolidated [runtime observability contract](docs/RUNTIME_OBSERVABILITY.md).
+CAN/BMS integrations use the
+[external interlock contract](docs/EXTERNAL_INTERLOCKS.md).
 
 ## Run the read-only web monitor
 

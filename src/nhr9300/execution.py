@@ -8,7 +8,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from .acquisition import AcquisitionCollector
 from .backends.ivi import IVIBackend
@@ -144,6 +144,8 @@ def execute_workflow_on_runtime(
     workflow_id: str | None = None,
     bundle_digest: str | None = None,
     simulator_initial_state_policy: str | None = None,
+    external_interlock_evidence: Callable[[], Mapping[str, Any]] | None = None,
+    runtime_safety_failure: Callable[[Exception], bool] | None = None,
 ) -> WorkflowOutcome:
     """Execute an approved workflow on a service-owned runtime.
 
@@ -154,6 +156,10 @@ def execute_workflow_on_runtime(
     try:
         configuration = load_workflow_profile(profile)
         validate_workflow_profile(configuration, hardware=hardware)
+        if configuration.external_interlocks and external_interlock_evidence is None:
+            raise ValueError(
+                "External interlock workflows require the service-owned snapshot runtime"
+            )
         dynamic_profile_files = _dynamic_profile_evidence(configuration)
         planned_stages = (
             None
@@ -256,6 +262,7 @@ def execute_workflow_on_runtime(
                 manage_collector=False,
                 stop_event=stop_event,
                 progress_callback=progress_callback,
+                failure_handler=runtime_safety_failure,
             ).run(planned_stages)
             report["sequence_result"] = to_jsonable(sequence_result)
             if sequence_result.state == RoutineState.STOPPED and stop_event.is_set():
@@ -264,7 +271,17 @@ def execute_workflow_on_runtime(
             elif sequence_result.state != RoutineState.PASSED:
                 raise RuntimeError(sequence_result.reason)
     except Exception as exc:
-        report["error"] = f"{type(exc).__name__}: {exc}"
+        handled = False
+        if runtime_safety_failure is not None:
+            try:
+                handled = runtime_safety_failure(exc)
+            except Exception:
+                handled = False
+        if handled:
+            report["stopped"] = True
+            report["stop_reason"] = f"{type(exc).__name__}: {exc}"
+        else:
+            report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
         if cleanup_authorized:
             failures: list[str] = []
@@ -333,6 +350,13 @@ def execute_workflow_on_runtime(
         else:
             report["cleanup_skipped"] = "Initial safe-start gate did not pass"
             report["final_safe_state_verified"] = False
+        if external_interlock_evidence is not None:
+            try:
+                report["external_interlocks"] = dict(external_interlock_evidence())
+            except Exception as exc:
+                report["external_interlock_evidence_error"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
         report["passed"] = (
             "error" not in report
             and not report.get("stopped", False)
@@ -369,6 +393,10 @@ def execute_workflow(request: WorkflowRequest) -> WorkflowOutcome:
     try:
         configuration = load_workflow_profile(request.profile)
         validate_workflow_profile(configuration, hardware=hardware)
+        if configuration.external_interlocks:
+            raise ValueError(
+                "External interlock workflows require the service-owned snapshot runtime"
+            )
         dynamic_profile_files = _dynamic_profile_evidence(configuration)
         planned_stages = (
             None

@@ -102,6 +102,7 @@ class AcquisitionCollector:
         self._callbacks: list[Callable[[AcquisitionSample], None]] = []
         self._callbacks_lock = threading.Lock()
         self._error_callbacks: list[Callable[[str], None]] = []
+        self._safety_failure_handler: Callable[[Exception], bool] | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._context_lock = threading.Lock()
@@ -174,6 +175,13 @@ class AcquisitionCollector:
     def add_error_callback(self, callback: Callable[[str], None]) -> None:
         with self._callbacks_lock:
             self._error_callbacks.append(callback)
+
+    def set_safety_failure_handler(
+        self, callback: Callable[[Exception], bool] | None
+    ) -> None:
+        """Install the service-owned workflow response for runtime safety faults."""
+        with self._callbacks_lock:
+            self._safety_failure_handler = callback
 
     def start(self) -> AcquisitionCollector:
         if self.running:
@@ -352,12 +360,19 @@ class AcquisitionCollector:
                     self.error = str(exc)
                     with self._callbacks_lock:
                         error_callbacks = list(self._error_callbacks)
+                        safety_failure_handler = self._safety_failure_handler
+                    handled = False
+                    if safety_failure_handler is not None:
+                        try:
+                            handled = safety_failure_handler(exc)
+                        except Exception:
+                            handled = False
                     for callback in error_callbacks:
                         try:
                             callback(self.error)
                         except Exception:
                             pass
-                    if self.instrument.may_be_energized:
+                    if self.instrument.may_be_energized and not handled:
                         try:
                             self.instrument.emergency_stop(
                                 f"Acquisition/interlock failure: {exc}"

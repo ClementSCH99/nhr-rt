@@ -127,7 +127,7 @@ Desktop visual QA at 1440 x 900 covered:
 The browser used only assets served from localhost. This software evidence does
 not validate physical NHR behavior, IVI timing, energized-test interference,
 external safety heartbeat handling or a dynamic SoP ceiling. Those remain
-future supervised and Milestone 5/6 validation items.
+future supervised M5 validation and Milestone 6 implementation items.
 
 ## Expansion Phase 2 physical validation — 2026-08-25 to 2026-08-27
 
@@ -151,3 +151,31 @@ general product release. The closeout archive is indexed in
 `archives/phase2-physical-validation-20260825/README.md`. Raw generated runs and
 local approved profiles were deliberately removed after the Markdown evidence
 was archived.
+
+## Milestone 5 software validation — 2026-09-09
+
+External fail-closed interlocks were implemented and validated without CAN or
+physical hardware. Thirteen focused tests cover finite numeric and boolean
+rules, strict snapshots, missing/unhealthy/stale/out-of-order data, runtime
+latching with exact triggering-snapshot evidence, safe-permissive stability,
+bounded emergency fallback, bounded request/source/signal cardinality, a
+stable SSE payload, strict stop/error classification, API publication,
+pre-start refusal, runtime heartbeat loss, runtime voltage trip, controlled
+cleanup and durable stop evidence. The timing-sensitive M5 group passed twice
+consecutively after both the acquisition and routine detection paths were
+routed through the same workflow controller.
+
+The final post-audit complete software suite passed 141 tests with the two
+hardware tests skipped. Python compilation and `git diff --check` also passed.
+One earlier complete run encountered the existing intermittent Windows monitor socket
+failure (`WinError 10053`); that test passed in the focused rerun and in the
+final complete suite.
+
+This evidence proves the service/simulator contract only. It does not validate
+a real CAN transport, DBC/signal identity, timestamp accuracy, publication
+cadence, units, sensor wiring or placement, reviewed battery thresholds,
+physical NHR controlled-stop time, emergency fallback time, or final physical
+safe state. No hardware command, energization, commit or push was performed.
+
+The exact snapshot/rule contract and operator boundaries are documented in
+[EXTERNAL_INTERLOCKS.md](EXTERNAL_INTERLOCKS.md).
