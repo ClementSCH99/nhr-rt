@@ -50,6 +50,11 @@ authority. Workflow starts and primitive writes retain their existing gates. A
 transport failure is not proof that hardware is safe; query runtime/interlocks
 again or use independent local verification.
 
+Publish external snapshots outside the CAN receive/decode thread and set a
+bounded `timeout_s`. If a response is lost, retry the exact same payload and
+sequence before publishing newer data. See
+[EXTERNAL_INTERLOCKS.md](EXTERNAL_INTERLOCKS.md) for sequence restart rules.
+
 See [Service authority contract](SERVICE_AUTHORITY.md) for endpoint
 classification, primitive compatibility policy and shutdown behavior.
 

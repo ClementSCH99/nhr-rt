@@ -107,7 +107,7 @@ class ExternalInterlockManager:
         return signals
 
     def submit(self, source_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """Store one strictly newer snapshot and return its public representation."""
+        """Store a newer snapshot or accept an identical retry idempotently."""
         self._validate_source_id(source_id)
         allowed = {"sequence", "timestamp_utc", "health", "signals"}
         unknown = set(payload) - allowed
@@ -153,7 +153,14 @@ class ExternalInterlockManager:
             )
             with self._lock:
                 prior = self._snapshots.get(source_id)
-                if prior is not None and sequence <= prior.sequence:
+                if prior is not None and sequence == prior.sequence:
+                    if self._same_source_payload(prior, snapshot):
+                        return self._snapshot_public(prior)
+                    raise NHRValidationError(
+                        f"sequence {sequence} for source {source_id!r} was already "
+                        "accepted with different snapshot data"
+                    )
+                if prior is not None and sequence < prior.sequence:
                     raise NHRValidationError(
                         f"sequence must increase for source {source_id!r}; "
                         f"last accepted value is {prior.sequence}"
@@ -190,6 +197,22 @@ class ExternalInterlockManager:
                 ):
                     self._source_faults[source_id] = str(exc)
             raise
+
+    @staticmethod
+    def _same_source_payload(
+        prior: ExternalSnapshot, candidate: ExternalSnapshot
+    ) -> bool:
+        if (
+            prior.timestamp_utc != candidate.timestamp_utc
+            or prior.health != candidate.health
+            or prior.signals.keys() != candidate.signals.keys()
+        ):
+            return False
+        return all(
+            type(prior.signals[name]) is type(candidate.signals[name])
+            and prior.signals[name] == candidate.signals[name]
+            for name in prior.signals
+        )
 
     def activate(
         self,

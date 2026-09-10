@@ -90,6 +90,37 @@ def test_transport_error_warns_that_state_is_unknown(monkeypatch) -> None:
         NHRServiceClient().configuration()
 
 
+def test_external_snapshot_uses_caller_timeout(monkeypatch) -> None:
+    observed: dict[str, float] = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self) -> bytes:
+            return b'{"sequence": 1}'
+
+    def respond(request, timeout):
+        observed["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr("nhr9300.client.urlopen", respond)
+    NHRServiceClient().submit_external_snapshot(
+        "sim",
+        "bms-main",
+        sequence=1,
+        timestamp_utc="2026-09-10T12:00:00+00:00",
+        health="ok",
+        signals={"pack_voltage_v": 90.0},
+        timeout_s=0.75,
+    )
+
+    assert observed["timeout"] == 0.75
+
+
 def test_doctor_checks_output_and_registry_without_connecting(tmp_path) -> None:
     profile = tmp_path / "workflow.json"
     profile.write_text(

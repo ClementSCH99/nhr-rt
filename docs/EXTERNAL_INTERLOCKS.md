@@ -40,10 +40,21 @@ snapshot and 262144 bytes per JSON request body. These bounds protect the
 service from an accidental unbounded publisher; they are not an authentication
 mechanism.
 
+If the publisher does not receive the HTTP response, it must retry the exact
+same sequence, timestamp, health and signals. That retry is idempotent. Reusing
+the sequence with different data, or submitting an older sequence, is rejected
+and fails the source closed. A publisher that restarts while the service stays
+running must read `client.interlocks(instrument_id)`, find its last accepted
+sequence under `external_sources.sources`, and continue above it. A service
+restart clears this in-memory sequence history; continuing with the publisher's
+existing increasing sequence remains valid. Only one publisher may own a given
+`source_id`.
+
 Only `health: "ok"` is safe. Missing fields, invalid values, unhealthy source
-state, a timestamp more than one second in the future, or a repeated/out-of-
-order sequence records a source rejection. A later valid snapshot with a
-strictly greater sequence is required to clear that source-level rejection.
+state, a timestamp more than one second in the future, an older sequence or a
+reused sequence with different data records a source rejection. A later valid
+snapshot with a strictly greater sequence is required to clear that source-
+level rejection; replaying an earlier accepted snapshot does not clear it.
 
 The service derives initial source age from UTC and then advances age with its
 own monotonic clock. Cross-process monotonic clocks are never compared.

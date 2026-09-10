@@ -120,7 +120,7 @@ def test_missing_stale_unhealthy_and_out_of_order_fail_closed() -> None:
     with pytest.raises(NHRInterlockError, match="signal_stale"):
         manager.require_safe()
 
-    with pytest.raises(NHRValidationError, match="must increase"):
+    with pytest.raises(NHRValidationError, match="already accepted"):
         manager.submit(
             "bms-main",
             {
@@ -130,6 +130,33 @@ def test_missing_stale_unhealthy_and_out_of_order_fail_closed() -> None:
                 "signals": {"pack_voltage_v": 90},
             },
         )
+    with pytest.raises(NHRInterlockError, match="source_rejected"):
+        manager.require_safe()
+
+
+def test_identical_snapshot_retry_is_idempotent_but_conflict_fails_closed() -> None:
+    manager = ExternalInterlockManager()
+    manager.activate([_rule()])
+    payload = {
+        "sequence": 7,
+        "timestamp_utc": _now(),
+        "health": "ok",
+        "signals": {"pack_voltage_v": 90, "hv_permissive": True},
+    }
+
+    accepted = manager.submit("bms-main", payload)
+    retried = manager.submit("bms-main", payload)
+
+    assert retried == accepted
+    assert manager.status()["sources"][0]["last_rejection"] is None
+
+    conflicting = dict(payload)
+    conflicting["signals"] = {"pack_voltage_v": 91, "hv_permissive": True}
+    with pytest.raises(NHRValidationError, match="different snapshot data"):
+        manager.submit("bms-main", conflicting)
+    with pytest.raises(NHRInterlockError, match="source_rejected"):
+        manager.require_safe()
+    assert manager.submit("bms-main", payload) == accepted
     with pytest.raises(NHRInterlockError, match="source_rejected"):
         manager.require_safe()
 
@@ -446,11 +473,16 @@ def test_service_blocks_start_then_controlled_stops_and_preserves_evidence(tmp_p
                 bundle_digest=bundle.digest,
             )
 
+        first_timestamp = _now()
         accepted = client.submit_external_snapshot(
-            "sim-m5", "bms-main", sequence=1, timestamp_utc=_now(),
+            "sim-m5", "bms-main", sequence=1, timestamp_utc=first_timestamp,
             health="ok", signals={"pack_voltage_v": 90, "hv_permissive": False},
         )
         assert accepted["sequence"] == 1
+        assert client.submit_external_snapshot(
+            "sim-m5", "bms-main", sequence=1, timestamp_utc=first_timestamp,
+            health="ok", signals={"pack_voltage_v": 90, "hv_permissive": False},
+        ) == accepted
         with pytest.raises(NHRAPIError, match="hv_permissive"):
             client.start_workflow(
                 "sim-m5",

@@ -182,8 +182,13 @@ class NHRServiceClient:
         timestamp_utc: str,
         health: str,
         signals: dict[str, float | bool],
+        timeout_s: float = 10.0,
     ) -> dict[str, Any]:
-        """Forward decoded external data; this endpoint has no hardware authority."""
+        """Forward decoded data with a caller-bounded transport timeout.
+
+        If the response is lost, retry the exact same snapshot and sequence.
+        The service accepts that retry idempotently.
+        """
         return self._request(
             "PUT",
             f"/instruments/{instrument_id}/external-sources/{source_id}/snapshot",
@@ -193,6 +198,7 @@ class NHRServiceClient:
                 "health": health,
                 "signals": signals,
             },
+            timeout_s=timeout_s,
         )
 
     def configure_limits(
