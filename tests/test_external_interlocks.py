@@ -465,13 +465,14 @@ def test_service_blocks_start_then_controlled_stops_and_preserves_evidence(tmp_p
     host, port = server.server_address
     client = NHRServiceClient(f"http://{host}:{port}")
     try:
-        with pytest.raises(NHRAPIError, match="source_missing"):
+        with pytest.raises(NHRAPIError, match="source_missing") as missing:
             client.start_workflow(
                 "sim-m5",
                 request_id=str(uuid.uuid4()),
                 workflow_id="m5-v1",
                 bundle_digest=bundle.digest,
             )
+        assert missing.value.code == "interlock_unsafe"
 
         first_timestamp = _now()
         accepted = client.submit_external_snapshot(

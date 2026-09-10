@@ -62,6 +62,39 @@ class RuntimeSnapshot(TypedDict, total=False):
     alerts: list[dict[str, str]]
 
 
+class ServiceConfiguration(TypedDict, total=False):
+    api_versions: list[str]
+    contracts: dict[str, str]
+    capabilities: list[str]
+    restart_required_for_config_changes: bool
+    instruments: list[dict[str, Any]]
+
+
+class ExternalSnapshotReceipt(TypedDict, total=False):
+    source_id: str
+    sequence: int
+    timestamp_utc: str
+    received_at_utc: str
+    health: str
+    signals: dict[str, float | bool]
+
+
+class InterlockSnapshot(TypedDict, total=False):
+    instrument_id: str
+    external_sources: dict[str, Any]
+    results: list[dict[str, Any]]
+
+
+class RuntimeEventEnvelope(TypedDict, total=False):
+    schema_version: str
+    sequence: int
+    timestamp_utc: str
+    instrument_id: str
+    event: str
+    data: dict[str, Any]
+    dropped_before: int
+
+
 class NHRServiceClient:
     """Dependency-free client for the localhost NHR service.
 
@@ -115,6 +148,7 @@ class NHRServiceClient:
                 str(payload.get("error", exc.reason)),
                 status=exc.code,
                 error_type=payload.get("type"),
+                code=payload.get("code"),
             ) from exc
         except (URLError, TimeoutError, OSError) as exc:
             raise NHRTransportError(
@@ -130,7 +164,7 @@ class NHRServiceClient:
         """List configured instruments without connecting them."""
         return self._request("GET", "/instruments")
 
-    def configuration(self) -> dict[str, Any]:
+    def configuration(self) -> ServiceConfiguration:
         """Return resolved public service configuration and feature flags."""
         return self._request("GET", "/configuration")
 
@@ -169,7 +203,7 @@ class NHRServiceClient:
         """Return one read-only consolidated snapshot for UI or recovery logic."""
         return self._request("GET", f"/instruments/{instrument_id}/runtime")
 
-    def interlocks(self, instrument_id: str) -> dict[str, Any]:
+    def interlocks(self, instrument_id: str) -> InterlockSnapshot:
         """Return current static and external interlock decisions."""
         return self._request("GET", f"/instruments/{instrument_id}/interlocks")
 
@@ -183,7 +217,7 @@ class NHRServiceClient:
         health: str,
         signals: dict[str, float | bool],
         timeout_s: float = 10.0,
-    ) -> dict[str, Any]:
+    ) -> ExternalSnapshotReceipt:
         """Forward decoded data with a caller-bounded transport timeout.
 
         If the response is lost, retry the exact same snapshot and sequence.
@@ -388,7 +422,7 @@ class NHRServiceClient:
         instrument_id: str,
         *,
         stop_event: threading.Event | None = None,
-    ) -> Iterator[dict[str, Any]]:
+    ) -> Iterator[RuntimeEventEnvelope]:
         """Yield typed v1 runtime SSE event envelopes."""
         if stop_event is not None and stop_event.is_set():
             return
@@ -461,7 +495,9 @@ class ManagedEventObserver:
         self.instrument_id = instrument_id
         self.reconnect = reconnect
         self.reconnect_delay_s = reconnect_delay_s
-        self._queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=queue_size)
+        self._queue: queue.Queue[RuntimeEventEnvelope] = queue.Queue(
+            maxsize=queue_size
+        )
         self._stop = threading.Event()
         self._error: BaseException | None = None
         self._thread: threading.Thread | None = None
@@ -523,7 +559,7 @@ class ManagedEventObserver:
             if self._stop.wait(self.reconnect_delay_s):
                 return
 
-    def get(self, timeout_s: float | None = None) -> dict[str, Any]:
+    def get(self, timeout_s: float | None = None) -> RuntimeEventEnvelope:
         """Return the next event, raising the worker error after the queue drains."""
         if self._thread is None:
             self.start()

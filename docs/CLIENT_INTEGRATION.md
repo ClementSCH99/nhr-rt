@@ -40,6 +40,23 @@ New clients use `/api/v1` by default. `NHRServiceClient(..., api_version=None)`
 is available for verifying a legacy read alias during migration; new
 integrations should not select it.
 
+At startup, verify compatibility metadata instead of inferring features from
+the package version:
+
+```python
+configuration = client.configuration()
+assert "v1" in configuration["api_versions"]
+assert configuration["contracts"]["external_snapshot"] == "1.0"
+assert "external_snapshot_publication" in configuration["capabilities"]
+```
+
+API failures expose `NHRAPIError.status`, `.error_type` and the stable `.code`.
+Branch on `.code`, not on the human-readable exception message. Existing v1
+clients that use only `error` and `type` remain compatible.
+
+The v1 codes are `policy_rejected`, `interlock_unsafe`, `state_conflict`,
+`invalid_request`, `request_failed` and `internal_error`.
+
 The supported compatibility boundary is `NHRServiceClient`, the documented
 HTTP/SSE endpoints and their JSON fields. Internal module paths are not a
 cross-project API. During v0.2.x the established top-level workflow aliases are

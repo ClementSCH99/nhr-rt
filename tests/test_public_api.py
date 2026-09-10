@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from nhr9300 import (
+    ExternalSnapshotReceipt,
+    InterlockSnapshot,
     NHRServiceClient,
+    RuntimeEventEnvelope,
+    RuntimeSnapshot,
+    ServiceConfiguration,
     WorkflowBundle,
     WorkflowConfiguration,
     load_cc_profile,
@@ -13,7 +18,14 @@ from nhr9300.cc_profiles import (
     load_cc_profile as direct_load_cc_profile,
     validate_cc_profile as direct_validate_cc_profile,
 )
-from nhr9300.client import NHRServiceClient as DirectClient
+from nhr9300.client import (
+    ExternalSnapshotReceipt as DirectExternalSnapshotReceipt,
+    InterlockSnapshot as DirectInterlockSnapshot,
+    NHRServiceClient as DirectClient,
+    RuntimeEventEnvelope as DirectRuntimeEventEnvelope,
+    RuntimeSnapshot as DirectRuntimeSnapshot,
+    ServiceConfiguration as DirectServiceConfiguration,
+)
 from nhr9300.profiles import (
     WorkflowConfiguration as DirectWorkflowConfiguration,
     load_workflow_profile as direct_load_workflow_profile,
@@ -24,6 +36,11 @@ from nhr9300.workflow_registry import WorkflowBundle as DirectWorkflowBundle
 
 def test_service_client_is_part_of_public_api() -> None:
     assert NHRServiceClient is DirectClient
+    assert ServiceConfiguration is DirectServiceConfiguration
+    assert ExternalSnapshotReceipt is DirectExternalSnapshotReceipt
+    assert InterlockSnapshot is DirectInterlockSnapshot
+    assert RuntimeSnapshot is DirectRuntimeSnapshot
+    assert RuntimeEventEnvelope is DirectRuntimeEventEnvelope
 
 
 def test_cc_profile_contract_is_part_of_public_api() -> None:

@@ -21,7 +21,13 @@ from urllib.parse import urlparse
 from .acquisition import AcquisitionCollector
 from .backends.ivi import DEFAULT_DRIVER_DLL, IVIBackend
 from .backends.simulator import SimulatedBackend
-from .errors import NHRError, NHRPolicyError, NHRStateError, NHRValidationError
+from .errors import (
+    NHRError,
+    NHRInterlockError,
+    NHRPolicyError,
+    NHRStateError,
+    NHRValidationError,
+)
 from .evidence import check_output_directory
 from .external_interlocks import ExternalInterlockManager
 from .instrument import NHR9300
@@ -44,6 +50,19 @@ from .workflow_runs import WorkflowRunController
 
 LOGGER = logging.getLogger(__name__)
 MAX_JSON_BODY_BYTES = 256 * 1024
+SERVICE_CONTRACTS = {
+    "error_response": "1.0",
+    "external_snapshot": "1.0",
+    "runtime_events": RUNTIME_SCHEMA_VERSION,
+    "runtime_snapshot": RUNTIME_SCHEMA_VERSION,
+}
+SERVICE_CAPABILITIES = [
+    "approved_workflows",
+    "external_interlocks",
+    "external_snapshot_publication",
+    "runtime_events",
+    "runtime_snapshot",
+]
 
 
 def _status_payload(status: Any) -> dict[str, Any]:
@@ -623,6 +642,8 @@ class InstrumentManager:
             "config_file": str(self.config_path) if self.config_path else None,
             "listen_url": self.listen_url,
             "api_versions": ["v1"],
+            "contracts": dict(SERVICE_CONTRACTS),
+            "capabilities": list(SERVICE_CAPABILITIES),
             "legacy_read_routes": True,
             "restart_required_for_config_changes": True,
             "output_dir_diagnostic": self.output_dir_diagnostic,
@@ -1097,13 +1118,26 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
     def _error(self, exc: Exception) -> None:
         if isinstance(exc, NHRPolicyError):
             status = HTTPStatus.FORBIDDEN
+            code = "policy_rejected"
+        elif isinstance(exc, NHRInterlockError):
+            status = HTTPStatus.CONFLICT
+            code = "interlock_unsafe"
         elif isinstance(exc, NHRStateError):
             status = HTTPStatus.CONFLICT
-        elif isinstance(exc, (NHRError, ValueError, KeyError, TypeError)):
+            code = "state_conflict"
+        elif isinstance(exc, (NHRValidationError, ValueError, KeyError, TypeError)):
             status = HTTPStatus.BAD_REQUEST
+            code = "invalid_request"
+        elif isinstance(exc, NHRError):
+            status = HTTPStatus.BAD_REQUEST
+            code = "request_failed"
         else:
             status = HTTPStatus.INTERNAL_SERVER_ERROR
-        self._send(status, {"error": str(exc), "type": type(exc).__name__})
+            code = "internal_error"
+        self._send(
+            status,
+            {"error": str(exc), "type": type(exc).__name__, "code": code},
+        )
 
 
 def build_server(

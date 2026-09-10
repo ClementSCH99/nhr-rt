@@ -1,6 +1,5 @@
 """Exception hierarchy for the NHR9300 package."""
 
-
 class NHRError(Exception):
     """Base class for all package errors."""
 
@@ -17,10 +16,18 @@ class NHRTransportError(NHRError):
 class NHRAPIError(NHRError):
     """A well-formed HTTP error returned by the NHR service."""
 
-    def __init__(self, message: str, *, status: int, error_type: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int,
+        error_type: str | None = None,
+        code: str | None = None,
+    ):
         super().__init__(message)
         self.status = status
         self.error_type = error_type
+        self.code = code
 
 
 class NHRProtocolError(NHRError):

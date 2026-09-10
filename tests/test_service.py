@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 import nhr9300.service as service_module
 import pytest
 from nhr9300.client import NHRServiceClient
+from nhr9300.errors import NHRAPIError
 from nhr9300.routines import Routine
 from nhr9300.service import build_server
 from nhr9300.types import OperatingState, Setpoints
@@ -89,6 +90,13 @@ def test_startup_summary_and_effective_configuration(tmp_path, capsys) -> None:
         assert instrument["csv_path"] in output
         assert configuration["listen_url"] in output
         assert configuration["restart_required_for_config_changes"] is True
+        assert configuration["contracts"] == {
+            "error_response": "1.0",
+            "external_snapshot": "1.0",
+            "runtime_events": "1.0",
+            "runtime_snapshot": "1.0",
+        }
+        assert "external_snapshot_publication" in configuration["capabilities"]
     finally:
         manager.close()
         server.server_close()
@@ -361,6 +369,7 @@ def test_physical_primitive_control_is_forbidden_by_default(tmp_path) -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
     request = Request(
         f"http://{host}:{port}/api/v1/instruments/physical-policy-only/limits",
         data=b"{}",
@@ -374,6 +383,9 @@ def test_physical_primitive_control_is_forbidden_by_default(tmp_path) -> None:
         assert "Primitive compatibility control is disabled" in (
             caught.value.read().decode("utf-8")
         )
+        with pytest.raises(NHRAPIError) as client_error:
+            client.configure_limits("physical-policy-only", {})
+        assert client_error.value.code == "policy_rejected"
     finally:
         server.shutdown()
         thread.join()
