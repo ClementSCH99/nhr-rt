@@ -5,10 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from nhr9300.client import NHRServiceClient
+from nhr9300.client import ExternalSnapshotPublisher, NHRServiceClient
 from nhr9300.diagnostics import diagnose_config
 from nhr9300.errors import (
+    NHRAPIError,
     NHREvidencePersistenceError,
+    NHRPendingSnapshotError,
     NHRProtocolError,
     NHRTransportError,
     NHRWorkflowTimeout,
@@ -119,6 +121,96 @@ def test_external_snapshot_uses_caller_timeout(monkeypatch) -> None:
     )
 
     assert observed["timeout"] == 0.75
+
+
+def test_external_snapshot_publisher_preserves_ambiguous_retry(monkeypatch) -> None:
+    client = NHRServiceClient()
+    monkeypatch.setattr(
+        client,
+        "interlocks",
+        lambda _instrument_id: {
+            "external_sources": {
+                "sources": [{"source_id": "bms-main", "sequence": 4}]
+            }
+        },
+    )
+    submissions: list[dict] = []
+
+    def submit(_instrument_id, source_id, **payload):
+        submissions.append({"source_id": source_id, **payload})
+        if len(submissions) == 1:
+            raise NHRTransportError("response lost")
+        return {"source_id": source_id, "sequence": payload["sequence"]}
+
+    monkeypatch.setattr(client, "submit_external_snapshot", submit)
+    publisher = ExternalSnapshotPublisher(
+        client, "sim", "bms-main", timeout_s=0.5
+    )
+
+    with pytest.raises(NHRTransportError, match="response lost"):
+        publisher.publish(
+            timestamp_utc="2026-09-10T12:00:00+00:00",
+            health="ok",
+            signals={"pack_voltage_v": 90.0},
+        )
+    assert publisher.pending_sequence == 5
+    with pytest.raises(NHRPendingSnapshotError, match="Retry the pending"):
+        publisher.publish(
+            timestamp_utc="2026-09-10T12:00:01+00:00",
+            health="ok",
+            signals={"pack_voltage_v": 91.0},
+        )
+
+    receipt = publisher.retry_pending()
+
+    assert receipt["sequence"] == 5
+    assert submissions[0] == submissions[1]
+    assert publisher.pending_sequence is None
+    assert publisher.next_sequence == 6
+
+
+def test_external_snapshot_publisher_resynchronizes_after_api_rejection(
+    monkeypatch,
+) -> None:
+    client = NHRServiceClient()
+    monkeypatch.setattr(
+        client,
+        "interlocks",
+        lambda _instrument_id: {
+            "external_sources": {
+                "sources": [{"source_id": "bms-main", "sequence": 8}]
+            }
+        },
+    )
+    attempts = 0
+
+    def submit(_instrument_id, source_id, **payload):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise NHRAPIError(
+                "rejected", status=400, code="invalid_request"
+            )
+        return {"source_id": source_id, "sequence": payload["sequence"]}
+
+    monkeypatch.setattr(client, "submit_external_snapshot", submit)
+    publisher = ExternalSnapshotPublisher(client, "sim", "bms-main")
+
+    with pytest.raises(NHRAPIError, match="rejected"):
+        publisher.publish(
+            timestamp_utc="2026-09-10T12:00:00+00:00",
+            health="ok",
+            signals={"pack_voltage_v": 90.0},
+        )
+    assert publisher.pending_sequence is None
+    assert publisher.next_sequence is None
+
+    receipt = publisher.publish(
+        timestamp_utc="2026-09-10T12:00:01+00:00",
+        health="ok",
+        signals={"pack_voltage_v": 91.0},
+    )
+    assert receipt["sequence"] == 9
 
 
 def test_doctor_checks_output_and_registry_without_connecting(tmp_path) -> None:

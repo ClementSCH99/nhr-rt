@@ -72,6 +72,32 @@ bounded `timeout_s`. If a response is lost, retry the exact same payload and
 sequence before publishing newer data. See
 [EXTERNAL_INTERLOCKS.md](EXTERNAL_INTERLOCKS.md) for sequence restart rules.
 
+`ExternalSnapshotPublisher` implements only that sequence/retry state. It is
+synchronous, has no worker thread and never retries automatically:
+
+```python
+from nhr9300 import ExternalSnapshotPublisher, NHRTransportError
+
+publisher = ExternalSnapshotPublisher(
+    client, instrument_id, "bms-main", timeout_s=0.5
+)
+try:
+    publisher.publish(
+        timestamp_utc=decoded_sample.timestamp_utc,
+        health="ok",
+        signals=decoded_sample.signals,
+    )
+except NHRTransportError:
+    # Retry from the forwarding worker; do not replace it with newer data.
+    publisher.retry_pending()
+```
+
+The first publication resumes above the sequence reported by `interlocks()`.
+After an ambiguous transport or protocol result, `pending_sequence` remains set
+until `retry_pending()` succeeds. A definitive API rejection clears the pending
+payload and forces sequence resynchronization on the next publication. Use one
+publisher instance and one forwarding worker per `source_id`.
+
 See [Service authority contract](SERVICE_AUTHORITY.md) for endpoint
 classification, primitive compatibility policy and shutdown behavior.
 

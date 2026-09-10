@@ -3,6 +3,7 @@
 from .backends import SimulatedBackend
 from .acquisition import AcquisitionCollector
 from .client import (
+    ExternalSnapshotPublisher,
     ExternalSnapshotReceipt,
     InterlockSnapshot,
     ManagedEventObserver,
@@ -18,6 +19,7 @@ from .errors import (
     NHREvidencePersistenceError,
     NHRError,
     NHRProtocolError,
+    NHRPendingSnapshotError,
     NHRTransportError,
     NHRWorkflowTimeout,
 )
@@ -69,6 +71,7 @@ __all__ = [
     "CCProfileConfiguration",
     "CsvMeasurementSink",
     "ExternalSnapshotReceipt",
+    "ExternalSnapshotPublisher",
     "ExternalInterlockManager",
     "ExternalInterlockRule",
     "Identity",
@@ -83,6 +86,7 @@ __all__ = [
     "NHREvidencePersistenceError",
     "NHRError",
     "NHRProtocolError",
+    "NHRPendingSnapshotError",
     "NHR9300",
     "NHRServiceClient",
     "NHRTransportError",

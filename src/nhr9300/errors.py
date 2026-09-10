@@ -38,6 +38,10 @@ class NHRWorkflowTimeout(NHRError, TimeoutError):
     """Client-side workflow polling expired without stopping the service run."""
 
 
+class NHRPendingSnapshotError(NHRError):
+    """A publisher must resolve an ambiguous external snapshot submission."""
+
+
 class NHREvidencePersistenceError(NHRError, OSError):
     """Durable local evidence could not be persisted after bounded retries."""
 

@@ -7,12 +7,14 @@ import queue
 import threading
 import time
 import warnings
+from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Mapping, TypedDict
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .errors import (
     NHRAPIError,
+    NHRPendingSnapshotError,
     NHRProtocolError,
     NHRTransportError,
     NHRWorkflowTimeout,
@@ -471,6 +473,130 @@ class NHRServiceClient:
             reconnect=reconnect,
             reconnect_delay_s=reconnect_delay_s,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingExternalSnapshot:
+    sequence: int
+    timestamp_utc: str
+    health: str
+    signals: dict[str, float | bool]
+
+
+class ExternalSnapshotPublisher:
+    """Single-owner synchronous publisher with explicit ambiguous-retry state."""
+
+    def __init__(
+        self,
+        client: NHRServiceClient,
+        instrument_id: str,
+        source_id: str,
+        *,
+        timeout_s: float = 10.0,
+    ) -> None:
+        if timeout_s <= 0:
+            raise ValueError("timeout_s must be greater than zero")
+        self.client = client
+        self.instrument_id = instrument_id
+        self.source_id = source_id
+        self.timeout_s = timeout_s
+        self._next_sequence: int | None = None
+        self._pending: _PendingExternalSnapshot | None = None
+
+    @property
+    def next_sequence(self) -> int | None:
+        return self._next_sequence
+
+    @property
+    def pending_sequence(self) -> int | None:
+        return None if self._pending is None else self._pending.sequence
+
+    def synchronize_sequence(self) -> int:
+        """Resume above the source's last service-accepted sequence."""
+        if self._pending is not None:
+            raise NHRPendingSnapshotError(
+                "Retry the pending snapshot before synchronizing sequence state"
+            )
+        snapshot = self.client.interlocks(self.instrument_id)
+        external_sources = snapshot.get("external_sources")
+        if not isinstance(external_sources, Mapping):
+            raise NHRProtocolError("Interlock response has no external_sources object")
+        sources = external_sources.get("sources")
+        if not isinstance(sources, list):
+            raise NHRProtocolError("Interlock response has no external source list")
+        next_sequence = 0
+        for source in sources:
+            if (
+                not isinstance(source, Mapping)
+                or source.get("source_id") != self.source_id
+            ):
+                continue
+            sequence = source.get("sequence")
+            if sequence is None:
+                break
+            if (
+                isinstance(sequence, bool)
+                or not isinstance(sequence, int)
+                or sequence < 0
+            ):
+                raise NHRProtocolError("External source sequence is invalid")
+            next_sequence = sequence + 1
+            break
+        self._next_sequence = next_sequence
+        return next_sequence
+
+    def publish(
+        self,
+        *,
+        timestamp_utc: str,
+        health: str,
+        signals: Mapping[str, float | bool],
+    ) -> ExternalSnapshotReceipt:
+        """Publish new data, refusing to replace an ambiguous pending snapshot."""
+        if self._pending is not None:
+            raise NHRPendingSnapshotError(
+                "Retry the pending snapshot before publishing newer data"
+            )
+        if self._next_sequence is None:
+            self.synchronize_sequence()
+        assert self._next_sequence is not None
+        self._pending = _PendingExternalSnapshot(
+            sequence=self._next_sequence,
+            timestamp_utc=timestamp_utc,
+            health=health,
+            signals=dict(signals),
+        )
+        return self.retry_pending()
+
+    def retry_pending(self) -> ExternalSnapshotReceipt:
+        """Retry the exact pending payload after an ambiguous transport result."""
+        pending = self._pending
+        if pending is None:
+            raise NHRPendingSnapshotError("There is no pending snapshot to retry")
+        try:
+            receipt = self.client.submit_external_snapshot(
+                self.instrument_id,
+                self.source_id,
+                sequence=pending.sequence,
+                timestamp_utc=pending.timestamp_utc,
+                health=pending.health,
+                signals=pending.signals,
+                timeout_s=self.timeout_s,
+            )
+        except NHRAPIError:
+            self._pending = None
+            self._next_sequence = None
+            raise
+        if (
+            receipt.get("source_id") != self.source_id
+            or receipt.get("sequence") != pending.sequence
+        ):
+            raise NHRProtocolError(
+                "External snapshot receipt does not match the pending submission"
+            )
+        self._pending = None
+        self._next_sequence = pending.sequence + 1
+        return receipt
 
 
 class ManagedEventObserver:
