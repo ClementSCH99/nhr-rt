@@ -117,6 +117,66 @@ generate simulator data. CAN-PY must always forward its decoded source
 timestamp. The example performs one explicit retry after a transport failure;
 production retry scheduling remains owned by the CAN-PY forwarding worker.
 
+## CAN-PY integration contract
+
+CAN-PY owns CAN acquisition, DBC decoding, external-source health and combined
+session orchestration. It must not import an NHR backend or call primitive NHR
+controls. The 32-bit service remains the sole owner of IVI-COM, acquisition,
+approved workflows, safety actions and final safe state.
+
+Use one forwarding worker with a bounded queue and one
+`ExternalSnapshotPublisher` per `source_id`. The CAN receive/decode path must
+never wait for HTTP. A published snapshot must contain every signal required
+from that source by the active workflow. Publish only finite values in the
+documented SI units and keep the signal names identical to the approved
+workflow rules.
+
+Set `timestamp_utc` from the decoded CAN data, never from HTTP forwarding time.
+If a snapshot combines safety signals with different source timestamps, use
+the oldest contributing timestamp so freshness remains conservative. Set
+`health="ok"` only while the required CAN messages are current, decoding is
+valid and the complete required signal set is available. Otherwise publish a
+non-`ok` health when possible; silence also becomes unsafe through staleness.
+No publication cadence is inherently safe: it must remain comfortably below
+the smallest approved `max_age_s` used by the workflow.
+
+### Lifecycle order
+
+1. Create the client and verify `configuration()` compatibility.
+2. Start CAN acquisition/decoding, then the bounded forwarding worker.
+3. Publish a complete snapshot and confirm `interlocks()` before preflight.
+4. Preflight/start only a registered workflow and retain its `run_id`.
+5. Observe with `runtime()`/`events()` while publication remains active.
+6. On an intentional stop, call `stop_and_wait_workflow()` and keep publishing
+   until the run is terminal and final state is verified.
+7. Stop SSE and forwarding workers with bounded joins, then close CAN capture.
+
+Stopping CAN-PY, losing HTTP or closing an observer does not stop a service-
+owned workflow and is not proof of physical safe state.
+
+### Failure behavior
+
+| Condition | Required CAN-PY behavior | NHR-RT consequence |
+|---|---|---|
+| HTTP result unknown | Retain and retry the exact pending snapshot | Idempotent retry; no newer sequence first |
+| Definitive API rejection | Record `NHRAPIError.code`; do not retry blindly | Source remains fail-closed until valid data |
+| CAN unhealthy or decode incomplete | Publish non-`ok` health when transport permits | Start blocked or runtime controlled stop |
+| Publisher/service unavailable | Keep CAN capture independent; report NHR state unknown | Required data eventually becomes stale |
+| SSE gap or `dropped_before` | Refresh `runtime()` | Safety/acquisition remain service-owned |
+| CAN-PY shutdown with active run | Explicitly stop and wait before ending publication | Client exit alone does not stop the run |
+
+### Combined evidence
+
+CAN-PY owns its CAN evidence and the future combined-session manifest. Record
+the NHR API/contract versions, `instrument_id`, `source_id`, DBC/mapping
+identity, workflow ID/digest, request/run IDs and the terminal NHR report path.
+Correlate files with UTC timestamps. SSE is live observability and must not be
+used as a replacement for the NHR terminal report and referenced CSV evidence.
+
+Dynamic SoP limiting remains outside this contract. Until Milestone 6 is
+implemented and separately reviewed, CAN-PY must not interpret an external SoP
+signal as an applied NHR power limit.
+
 See [Service authority contract](SERVICE_AUTHORITY.md) for endpoint
 classification, primitive compatibility policy and shutdown behavior.
 
