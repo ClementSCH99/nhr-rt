@@ -98,6 +98,25 @@ until `retry_pending()` succeeds. A definitive API rejection clears the pending
 payload and forces sequence resynchronization on the next publication. Use one
 publisher instance and one forwarding worker per `source_id`.
 
+## Reference producer
+
+The dependency-free reference producer exercises this boundary without CAN,
+DBC or hardware access:
+
+```powershell
+python .\examples\external_snapshot_producer.py `
+  .\examples\external_snapshots.example.jsonl `
+  --service-url http://127.0.0.1:9300 `
+  --instrument-id sim-1 `
+  --source-id bms-reference
+```
+
+Each JSON Lines record contains `health`, `signals`, and optionally the original
+`timestamp_utc`. When omitted, the example inserts the current UTC time only to
+generate simulator data. CAN-PY must always forward its decoded source
+timestamp. The example performs one explicit retry after a transport failure;
+production retry scheduling remains owned by the CAN-PY forwarding worker.
+
 See [Service authority contract](SERVICE_AUTHORITY.md) for endpoint
 classification, primitive compatibility policy and shutdown behavior.
 
