@@ -24,6 +24,7 @@ from .errors import (
 TERMINAL_WORKFLOW_STATES = frozenset(
     {"passed", "stopped", "failed", "interrupted"}
 )
+DEFAULT_RECONNECT_DELAYS_S = (0.5, 1.0, 2.0, 5.0)
 
 
 class WorkflowSummary(TypedDict, total=False):
@@ -463,7 +464,7 @@ class NHRServiceClient:
         *,
         queue_size: int = 100,
         reconnect: bool = False,
-        reconnect_delay_s: float = 1.0,
+        reconnect_delay_s: float | None = None,
     ) -> ManagedEventObserver:
         """Create a context-managed background observer for runtime SSE events."""
         return ManagedEventObserver(
@@ -613,14 +614,23 @@ class ManagedEventObserver:
         *,
         queue_size: int = 100,
         reconnect: bool = False,
-        reconnect_delay_s: float = 1.0,
+        reconnect_delay_s: float | None = None,
     ) -> None:
-        if queue_size <= 0 or reconnect_delay_s <= 0:
-            raise ValueError("queue_size and reconnect_delay_s must be greater than zero")
+        if queue_size <= 0 or (
+            reconnect_delay_s is not None and reconnect_delay_s <= 0
+        ):
+            raise ValueError(
+                "queue_size and reconnect_delay_s must be greater than zero"
+            )
         self.client = client
         self.instrument_id = instrument_id
         self.reconnect = reconnect
         self.reconnect_delay_s = reconnect_delay_s
+        self._reconnect_delays_s = (
+            DEFAULT_RECONNECT_DELAYS_S
+            if reconnect_delay_s is None
+            else (reconnect_delay_s,)
+        )
         self._queue: queue.Queue[RuntimeEventEnvelope] = queue.Queue(
             maxsize=queue_size
         )
@@ -648,11 +658,14 @@ class ManagedEventObserver:
         return self
 
     def _run(self) -> None:
+        reconnect_attempt = 0
         while not self._stop.is_set():
+            received_event = False
             try:
                 for event in self.client.events(
                     self.instrument_id, stop_event=self._stop
                 ):
+                    received_event = True
                     sequence = event.get("sequence")
                     if isinstance(sequence, int):
                         if (
@@ -682,7 +695,13 @@ class ManagedEventObserver:
             if not self.reconnect:
                 return
             self.needs_runtime_refresh = True
-            if self._stop.wait(self.reconnect_delay_s):
+            if received_event:
+                reconnect_attempt = 0
+            delay_s = self._reconnect_delays_s[
+                min(reconnect_attempt, len(self._reconnect_delays_s) - 1)
+            ]
+            reconnect_attempt += 1
+            if self._stop.wait(delay_s):
                 return
 
     def get(self, timeout_s: float | None = None) -> RuntimeEventEnvelope:

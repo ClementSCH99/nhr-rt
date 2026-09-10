@@ -10,8 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
-from nhr9300 import ExternalSnapshotPublisher, NHRError, NHRServiceClient
-from nhr9300.errors import NHRTransportError
+from nhr9300 import (
+    ExternalSnapshotPublisher,
+    NHRError,
+    NHRServiceClient,
+    NHRTransportError,
+)
 
 
 def load_records(path: Path) -> Iterator[dict[str, Any]]:

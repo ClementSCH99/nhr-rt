@@ -1,6 +1,6 @@
 # NHR Remote Testing roadmap
 
-**Last updated:** September 9, 2026
+**Last updated:** September 10, 2026
 
 **Current release:** v0.2.0
 
@@ -37,9 +37,9 @@ The target system uses shared authority rather than one universal master:
 | Initial NHR monitoring interface | Separate 64-bit web monitor supplied by `nhr-rt` |
 | Multi-source session manifest and portable CAN/NHR evidence layout | CAN-PY |
 
-CAN-PY is not modified or released by this phase. `nhr-rt` will publish the
+CAN-PY is not modified or released by this phase. `nhr-rt` publishes the
 external-data contract, examples and a reference snapshot producer so the
-integration can later be implemented and validated in the CAN-PY project.
+integration can be implemented and validated in the CAN-PY project.
 
 The delivery order intentionally brings runtime observability and the read-only
 monitor immediately after remote workflow execution. This provides useful
@@ -254,6 +254,9 @@ PowerPanel as the primary live display.
 **Status:** software implementation and simulator validation complete as of
 September 9, 2026. Real CAN/BMS integration, threshold approval and physical
 stop-time validation remain future supervised gates.
+
+The CAN-PY-facing retry, compatibility, publisher and reference-producer
+contracts were hardened and validated in software on September 10, 2026.
 
 ### Outcome
 

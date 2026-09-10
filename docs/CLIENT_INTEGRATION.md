@@ -233,6 +233,10 @@ event stream is bounded and may report `dropped_before`; refresh `runtime()`
 after any gap. Do not calculate a workflow percentage when
 `progress_available` is false or `progress.percent` is `null`.
 
+`observe_events(reconnect=True)` uses the interruptible default reconnect
+backoff `0.5, 1, 2, 5` seconds and remains capped at 5 seconds. Passing
+`reconnect_delay_s` explicitly preserves a fixed application-selected delay.
+
 The runtime schema is documented in
 [RUNTIME_OBSERVABILITY.md](RUNTIME_OBSERVABILITY.md). Snapshot publication,
 typed rules, latching and stop behavior are documented in

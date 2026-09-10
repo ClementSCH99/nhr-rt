@@ -3,7 +3,8 @@ from __future__ import annotations
 import threading
 import time
 
-from nhr9300.client import NHRServiceClient
+from nhr9300.client import DEFAULT_RECONNECT_DELAYS_S, NHRServiceClient
+from nhr9300.errors import NHRTransportError
 from nhr9300.observability import (
     EVENT_TYPES,
     RuntimeEventBroker,
@@ -184,6 +185,37 @@ def test_managed_runtime_observer_owns_thread_and_can_refresh(tmp_path) -> None:
         assert not observer._thread.is_alive()
     finally:
         _close(server, manager, thread)
+
+
+def test_managed_observer_reconnect_backoff_is_bounded_and_interruptible() -> None:
+    client = NHRServiceClient()
+    attempts = 0
+
+    def unavailable(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise NHRTransportError("unavailable")
+
+    class ControlledStop:
+        def __init__(self) -> None:
+            self.delays: list[float] = []
+
+        def is_set(self) -> bool:
+            return False
+
+        def wait(self, delay_s: float) -> bool:
+            self.delays.append(delay_s)
+            return len(self.delays) == len(DEFAULT_RECONNECT_DELAYS_S)
+
+    client.events = unavailable  # type: ignore[method-assign]
+    observer = client.observe_events("sim", reconnect=True)
+    controlled_stop = ControlledStop()
+    observer._stop = controlled_stop  # type: ignore[assignment]
+
+    observer._run()
+
+    assert attempts == 4
+    assert controlled_stop.delays == list(DEFAULT_RECONNECT_DELAYS_S)
 
 
 def test_slow_runtime_subscriber_drops_intermediate_events_without_blocking() -> None:

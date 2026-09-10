@@ -179,3 +179,29 @@ safe state. No hardware command, energization, commit or push was performed.
 
 The exact snapshot/rule contract and operator boundaries are documented in
 [EXTERNAL_INTERLOCKS.md](EXTERNAL_INTERLOCKS.md).
+
+## CAN-PY integration readiness — 2026-09-10
+
+Six software-only integration blocks hardened idempotent snapshot retry,
+published compatibility metadata and stable error codes, added a synchronous
+single-owner snapshot publisher, supplied a reference JSON Lines producer, and
+defined the CAN-PY ownership/lifecycle contract. No CAN-PY file was modified.
+
+Focused acceptance covers identical and conflicting retries, ambiguous
+transport recovery, API-rejection resynchronization, publisher restart,
+contract discovery, bounded SSE queues/EOF and the interruptible default
+reconnect backoff (`0.5, 1, 2, 5` seconds, capped at 5 seconds). A separate
+Python 3.12 64-bit process loaded the dependency-free public client without
+`comtypes`, verified the external-snapshot 1.0 contract and published a snapshot
+through the 32-bit simulator service.
+
+The final complete software suite passed 148 tests with two hardware tests
+skipped. Compilation of `src`, `tests` and `examples`, public-import checks,
+documentation-link checks and `git diff --check` passed. One grouped run saw
+the known intermittent Windows socket `WinError 10053` on the oversized-body
+test; that test then passed three consecutive isolated runs and the final suite.
+
+This validates the NHR-RT integration boundary, not real CAN traffic, DBC or
+signal identity, sensor timestamps/units, production cadence, physical stop
+timing, dynamic SoP or safe state on hardware. Those remain separate CAN-PY,
+M6 and supervised physical-validation responsibilities.
