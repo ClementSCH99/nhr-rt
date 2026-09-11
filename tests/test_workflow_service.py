@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 import nhr9300.execution as execution_module
+import nhr9300.routines as routines_module
+import nhr9300.workflow_runs as workflow_runs_module
 from nhr9300.client import NHRServiceClient
 from nhr9300.errors import NHRError, NHRPolicyError
 from nhr9300.service import build_server
@@ -583,3 +585,298 @@ def test_service_shutdown_stops_active_approved_workflow(tmp_path) -> None:
     assert backend.enabled is False
     assert backend.watchdog_enabled is False
     server.server_close()
+
+
+def test_service_owned_renewals_are_durable_and_finish_safe(
+    tmp_path, monkeypatch
+) -> None:
+    profile = _profile(tmp_path / "workflow.json", duration_s=0.4)
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    data["workflow_limits"]["arm_lease_renewal_enabled"] = True
+    data["stages"] = [
+        {
+            "name": "accelerated-long-cc",
+            "type": "constant_current",
+            "duration_s": 0.4,
+            "mode": "charge",
+            "current_a": 2,
+            "voltage_v": 99,
+            "voltage_limit_enabled": True,
+            "current_limit_enabled": True,
+            "power_limit_enabled": False,
+        }
+    ]
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    config = _config(tmp_path, profile)
+    original_supervisor = workflow_runs_module.ArmLeaseSupervisor
+
+    def accelerated_supervisor(**kwargs):
+        return original_supervisor(
+            **kwargs,
+            renewal_margin_s=301,
+            renewal_threshold_s=0.1,
+        )
+
+    monkeypatch.setattr(
+        workflow_runs_module, "ArmLeaseSupervisor", accelerated_supervisor
+    )
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    digest = config["workflow_registry"][0]["expected_bundle_digest"]
+    try:
+        run = client.start_workflow(
+            "sim-remote",
+            request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=digest,
+        )
+        assert client.detach_observer("sim-remote")["service_connected"] is True
+        final = _wait_terminal(client, run["run_id"])
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        artifacts = json.loads(
+            Path(final["report_path"])
+            .with_name("artifacts.json")
+            .read_text(encoding="utf-8")
+        )
+        decisions = [
+            item["decision"] for item in report["arm_lease"]["events"]
+        ]
+
+        assert final["state"] == "passed"
+        assert final["arm_lease"]["renewal_count"] >= 2
+        assert decisions.count("renewed") == final["arm_lease"]["renewal_count"]
+        assert artifacts["arm_lease"] == report["arm_lease"]
+        assert final["final_safe_state"]["verified"] is True
+        backend = manager.get("sim-remote").instrument._backend
+        assert backend.enabled is False
+        assert backend.watchdog_enabled is False
+        assert backend.setpoints == backend.setpoints.__class__()
+    finally:
+        server.shutdown()
+        thread.join()
+        manager.close()
+        server.server_close()
+
+
+def test_approved_duration_overrun_uses_controlled_then_emergency_stop(
+    tmp_path, monkeypatch
+) -> None:
+    profile = _profile(tmp_path / "workflow.json", duration_s=0.05)
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    data["workflow_limits"]["arm_lease_renewal_enabled"] = True
+    data["stages"] = [
+        {
+            "name": "blocked-long-cc",
+            "type": "constant_current",
+            "duration_s": 0.05,
+            "mode": "charge",
+            "current_a": 2,
+            "voltage_v": 99,
+            "voltage_limit_enabled": True,
+            "current_limit_enabled": True,
+            "power_limit_enabled": False,
+        }
+    ]
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    config = _config(tmp_path, profile)
+    original_supervisor = workflow_runs_module.ArmLeaseSupervisor
+
+    def accelerated_supervisor(**kwargs):
+        return original_supervisor(**kwargs, renewal_threshold_s=0.01)
+
+    monkeypatch.setattr(
+        workflow_runs_module, "ArmLeaseSupervisor", accelerated_supervisor
+    )
+    monkeypatch.setattr(
+        routines_module.WaitStep,
+        "execute",
+        lambda self, context: time.sleep(0.5),
+    )
+    server, manager = build_server(config, port=0, announce=False)
+    managed = manager.get("sim-remote")
+    managed.workflow_controller.controlled_stop_timeout_s = 0.05
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    digest = config["workflow_registry"][0]["expected_bundle_digest"]
+    try:
+        run = client.start_workflow(
+            "sim-remote",
+            request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=digest,
+        )
+        final = _wait_terminal(client, run["run_id"])
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+
+        assert final["state"] == "stopped"
+        assert final["stop_cause"]["origin"] == "approved_duration_limit"
+        assert final["emergency_fallback_requested"] is True
+        assert report["stop_cause"]["origin"] == "approved_duration_limit"
+        assert any(
+            item["reason"] == "approved_stage_duration_exceeded"
+            for item in report["arm_lease"]["events"]
+        )
+        assert final["final_safe_state"]["verified"] is True
+        assert managed.instrument._backend.enabled is False
+        assert managed.instrument._backend.watchdog_enabled is False
+    finally:
+        server.shutdown()
+        thread.join()
+        manager.close()
+        server.server_close()
+
+
+def test_renewal_failure_requests_controlled_stop_and_preserves_cause(
+    tmp_path, monkeypatch
+) -> None:
+    profile = _profile(tmp_path / "workflow.json", duration_s=0.4)
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    data["workflow_limits"]["arm_lease_renewal_enabled"] = True
+    data["stages"] = [
+        {
+            "name": "failing-renewal-cc",
+            "type": "constant_current",
+            "duration_s": 0.4,
+            "mode": "charge",
+            "current_a": 2,
+            "voltage_v": 99,
+            "voltage_limit_enabled": True,
+            "current_limit_enabled": True,
+            "power_limit_enabled": False,
+        }
+    ]
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    config = _config(tmp_path, profile)
+    original_supervisor = workflow_runs_module.ArmLeaseSupervisor
+
+    def accelerated_supervisor(**kwargs):
+        return original_supervisor(
+            **kwargs,
+            renewal_margin_s=301,
+            renewal_threshold_s=0.1,
+        )
+
+    monkeypatch.setattr(
+        workflow_runs_module, "ArmLeaseSupervisor", accelerated_supervisor
+    )
+    server, manager = build_server(config, port=0, announce=False)
+    managed = manager.get("sim-remote")
+    monkeypatch.setattr(
+        managed.instrument,
+        "renew_arm",
+        lambda _duration: (_ for _ in ()).throw(RuntimeError("forced failure")),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    digest = config["workflow_registry"][0]["expected_bundle_digest"]
+    try:
+        run = client.start_workflow(
+            "sim-remote",
+            request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=digest,
+        )
+        final = _wait_terminal(client, run["run_id"])
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+
+        assert final["state"] == "stopped"
+        assert final["stop_cause"]["origin"] == "arm_lease_renewal"
+        assert report["stop_cause"]["origin"] == "arm_lease_renewal"
+        assert any(
+            item["decision"] == "refused" and "forced failure" in item["reason"]
+            for item in report["arm_lease"]["events"]
+        )
+        assert final["final_safe_state"]["verified"] is True
+        assert managed.instrument._backend.enabled is False
+        assert managed.instrument._backend.watchdog_enabled is False
+    finally:
+        server.shutdown()
+        thread.join()
+        manager.close()
+        server.server_close()
+
+
+def test_actual_lease_expiration_requests_immediate_emergency_stop(
+    tmp_path, monkeypatch
+) -> None:
+    profile = _profile(tmp_path / "workflow.json", duration_s=0.4)
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    data["workflow_limits"]["arm_lease_renewal_enabled"] = True
+    data["stages"] = [
+        {
+            "name": "expired-lease-cc",
+            "type": "constant_current",
+            "duration_s": 0.4,
+            "mode": "charge",
+            "current_a": 2,
+            "voltage_v": 99,
+            "voltage_limit_enabled": True,
+            "current_limit_enabled": True,
+            "power_limit_enabled": False,
+        }
+    ]
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    config = _config(tmp_path, profile)
+    original_supervisor = workflow_runs_module.ArmLeaseSupervisor
+
+    class ExpiringSupervisor(original_supervisor):
+        expired = False
+
+        def checkpoint(self, measurement):
+            if not self.expired:
+                self.expired = True
+                self.instrument._armed_until = time.monotonic() - 1
+            return super().checkpoint(measurement)
+
+    def accelerated_supervisor(**kwargs):
+        return ExpiringSupervisor(**kwargs, renewal_threshold_s=0.1)
+
+    monkeypatch.setattr(
+        workflow_runs_module, "ArmLeaseSupervisor", accelerated_supervisor
+    )
+    server, manager = build_server(config, port=0, announce=False)
+    managed = manager.get("sim-remote")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    digest = config["workflow_registry"][0]["expected_bundle_digest"]
+    try:
+        run = client.start_workflow(
+            "sim-remote",
+            request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=digest,
+        )
+        final = _wait_terminal(client, run["run_id"])
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        artifacts = json.loads(
+            Path(final["report_path"])
+            .with_name("artifacts.json")
+            .read_text(encoding="utf-8")
+        )
+
+        assert final["state"] == "stopped"
+        assert final["stop_cause"]["origin"] == "arm_lease_expired"
+        assert final["emergency_fallback_requested"] is True
+        assert report["stop_cause"]["origin"] == "arm_lease_expired"
+        assert any(
+            item["decision"] == "expired"
+            for item in report["arm_lease"]["events"]
+        )
+        assert artifacts["arm_lease"] == report["arm_lease"]
+        assert final["final_safe_state"]["verified"] is True
+        assert managed.instrument._backend.enabled is False
+        assert managed.instrument._backend.watchdog_enabled is False
+    finally:
+        server.shutdown()
+        thread.join()
+        manager.close()
+        server.server_close()

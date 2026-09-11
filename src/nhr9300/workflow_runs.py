@@ -11,7 +11,18 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .acquisition import AcquisitionCollector, AcquisitionSample
-from .errors import NHRInterlockError, NHRPolicyError, NHRStateError, NHRValidationError
+from .arm_lease import (
+    ArmLeaseExpiredError,
+    ArmLeaseRenewalError,
+    ArmLeaseSupervisor,
+)
+from .errors import (
+    NHRInterlockError,
+    NHRNotArmedError,
+    NHRPolicyError,
+    NHRStateError,
+    NHRValidationError,
+)
 from .external_interlocks import ExternalInterlockManager
 from .evidence import atomic_write_json
 from .execution import execute_workflow_on_runtime
@@ -70,6 +81,7 @@ class WorkflowRunController:
         self._threads: dict[str, threading.Thread] = {}
         self._stop_monitors: dict[str, threading.Thread] = {}
         self._stops: dict[str, threading.Event] = {}
+        self._arm_supervisors: dict[str, ArmLeaseSupervisor] = {}
         self._recovery_required = False
         self._recover_manifests()
 
@@ -294,6 +306,7 @@ class WorkflowRunController:
                 "stop_requested": False,
                 "stop_cause": None,
                 "emergency_fallback_requested": False,
+                "arm_lease": {"enabled": False},
                 "report_path": str((self._run_dir(run_id) / "report.json").resolve()),
                 "final_safe_state": {"verified": False},
                 "error": None,
@@ -382,11 +395,34 @@ class WorkflowRunController:
         )
         callback = lambda sample: self._accumulate(run_id, sample)
         self.collector.add_callback(callback)
+        supervisor: ArmLeaseSupervisor | None = None
         try:
             with self.operation_lock:
                 entry.bundle.verify_unchanged()  # type: ignore[union-attr]
                 target = self._run_dir(run_id)
                 profile = entry.bundle.materialize(target / "bundle")  # type: ignore[union-attr]
+                configuration = entry.bundle.configuration  # type: ignore[union-attr]
+                if configuration.workflow_limits.arm_lease_renewal_enabled:
+                    supervisor = ArmLeaseSupervisor(
+                        run_id=run_id,
+                        workflow_id=entry.workflow_id,
+                        bundle_digest=entry.bundle.digest,  # type: ignore[union-attr]
+                        instrument=self.instrument,
+                        collector=self.collector,
+                        safety_limits=configuration.safety_limits,
+                        max_sequence_duration_s=(
+                            configuration.workflow_limits.max_sequence_duration_s
+                        ),
+                        stop_event=stop_event,
+                        event_callback=lambda snapshot: self._arm_lease_update(
+                            run_id, snapshot
+                        ),
+                        deadline_callback=lambda reason: self._duration_limit_stop(
+                            run_id, reason
+                        ),
+                    )
+                    with self._state_lock:
+                        self._arm_supervisors[run_id] = supervisor
                 outcome = execute_workflow_on_runtime(
                     profile=profile,
                     output=target,
@@ -406,6 +442,7 @@ class WorkflowRunController:
                         run_id
                     ),
                     runtime_safety_failure=self.handle_runtime_failure,
+                    arm_lease_supervisor=supervisor,
                 )
             report = json.loads(outcome.report_path.read_text(encoding="utf-8"))
             sequence = report.get("sequence_result", {})
@@ -459,8 +496,29 @@ class WorkflowRunController:
             self.collector.remove_callback(callback)
             self.external_interlocks.deactivate()
             with self._state_lock:
+                self._arm_supervisors.pop(run_id, None)
                 if self._active_run_id == run_id:
                     self._active_run_id = None
+
+    def _arm_lease_update(self, run_id: str, snapshot: Mapping[str, Any]) -> None:
+        """Persist renewal evidence in the service-owned runtime manifest."""
+        with self._state_lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                raise NHRStateError("Arm lease event has no active workflow run")
+            run["arm_lease"] = dict(snapshot)
+            self._persist(run_id)
+
+    def _duration_limit_stop(self, run_id: str, reason: str) -> None:
+        """Route an approved stage/sequence overrun through controlled stop."""
+        try:
+            self.stop(
+                run_id,
+                origin="approved_duration_limit",
+                cause={"reason": reason},
+            )
+        except NHRValidationError:
+            return
 
     def get(self, run_id: str) -> dict[str, Any]:
         with self._state_lock:
@@ -635,6 +693,40 @@ class WorkflowRunController:
 
     def handle_runtime_failure(self, error: Exception) -> bool:
         """Route external interlock faults through controlled workflow stop."""
+        if isinstance(error, (ArmLeaseExpiredError, NHRNotArmedError)):
+            with self._state_lock:
+                run_id = self._active_run_id
+                supervisor = (
+                    None if run_id is None else self._arm_supervisors.get(run_id)
+                )
+            if run_id is None:
+                return False
+            if supervisor is not None:
+                supervisor.record_external_expiration(str(error))
+            try:
+                self.instrument.emergency_stop(
+                    "Arm lease expired during approved workflow"
+                )
+            finally:
+                with self._state_lock:
+                    self._runs[run_id]["emergency_fallback_requested"] = True
+                self.stop(
+                    run_id,
+                    origin="arm_lease_expired",
+                    cause={"error": f"{type(error).__name__}: {error}"},
+                )
+            return True
+        if isinstance(error, ArmLeaseRenewalError):
+            with self._state_lock:
+                run_id = self._active_run_id
+            if run_id is None:
+                return False
+            _, requested = self.stop(
+                run_id,
+                origin="arm_lease_renewal",
+                cause={"error": f"{type(error).__name__}: {error}"},
+            )
+            return requested or self._stops[run_id].is_set()
         if not isinstance(error, NHRInterlockError):
             return False
         status = self.external_interlocks.status()

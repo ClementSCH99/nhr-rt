@@ -215,6 +215,11 @@ class WaitStep(Step):
             remaining_s = deadline - time.monotonic()
             if remaining_s <= 0.0:
                 break
+            arm_lease_supervisor = getattr(
+                context, "arm_lease_supervisor", None
+            )
+            if arm_lease_supervisor is not None:
+                arm_lease_supervisor.checkpoint(measurement)
             context.stop_event.wait(min(self.poll_interval_s, remaining_s))
         if self.condition is not None:
             context.result.termination_reason = "condition_timeout"
@@ -258,6 +263,7 @@ class RoutineContext:
     collector: AcquisitionCollector
     stop_event: threading.Event
     result: RoutineResult
+    arm_lease_supervisor: Any | None = None
 
 
 class RoutineRunner:
@@ -270,6 +276,7 @@ class RoutineRunner:
         stop_event: threading.Event | None = None,
         progress_callback: Callable[[str, str], None] | None = None,
         failure_handler: Callable[[Exception], bool] | None = None,
+        arm_lease_supervisor: Any | None = None,
     ) -> None:
         self.instrument = instrument
         self.collector = collector
@@ -279,6 +286,7 @@ class RoutineRunner:
         self._owns_stop_event = stop_event is None
         self._progress_callback = progress_callback
         self._failure_handler = failure_handler
+        self._arm_lease_supervisor = arm_lease_supervisor
         self._thread: threading.Thread | None = None
 
     @property
@@ -344,7 +352,13 @@ class RoutineRunner:
         result.csv_path = (
             str(self.collector.csv_path) if self.collector.csv_path is not None else None
         )
-        context = RoutineContext(self.instrument, self.collector, self._stop, result)
+        context = RoutineContext(
+            self.instrument,
+            self.collector,
+            self._stop,
+            result,
+            self._arm_lease_supervisor,
+        )
         try:
             for index, step in enumerate(routine.steps):
                 if self._stop.is_set():

@@ -19,6 +19,7 @@ pytest-cache-files-*/
 dist/
 build/
 runs/
+approved/
 readonly-results/
 workflow-results/
 cc-results/

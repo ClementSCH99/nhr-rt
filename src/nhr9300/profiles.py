@@ -32,6 +32,9 @@ STAGE_TYPES = {
     "csv_profile",
 }
 ACTIVE_MODES = {OperatingState.CHARGE, OperatingState.DISCHARGE}
+MAX_SINGLE_ARM_STATIC_STAGE_S = 295.0
+MAX_RENEWABLE_STAGE_S = 28_800.0
+MAX_RENEWABLE_SEQUENCE_S = 43_200.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +45,7 @@ class WorkflowLimits:
     max_sequence_duration_s: float
     approved: bool
     profile_name: str
+    arm_lease_renewal_enabled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +157,15 @@ class WorkflowConfiguration:
                     configure_limits=include_limits,
                 )
             configured = configured or include_limits
-            built.append(SequenceStage(stage.name, routine, stage.mode))
+            built.append(
+                SequenceStage(
+                    stage.name,
+                    routine,
+                    stage.mode,
+                    stage.type,
+                    stage.duration_s,
+                )
+            )
         return tuple(built)
 
 
@@ -281,6 +293,10 @@ def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware:
         raise NHRValidationError("safety_limits must be explicitly approved and named")
     if not workflow.approved or not workflow.profile_name.strip():
         raise NHRValidationError("workflow_limits must be explicitly approved and named")
+    renewal_enabled = _required_bool(
+        workflow.arm_lease_renewal_enabled,
+        "workflow_limits.arm_lease_renewal_enabled",
+    )
     for value, name in (
         (workflow.max_current_a, "max_current_a"),
         (workflow.max_power_w, "max_power_w"),
@@ -288,6 +304,19 @@ def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware:
         (workflow.max_sequence_duration_s, "max_sequence_duration_s"),
     ):
         _positive(value, name)
+    if renewal_enabled:
+        if not configuration.watchdog_enabled:
+            raise NHRValidationError(
+                "Arm lease renewal requires watchdog_enabled=true"
+            )
+        if workflow.max_stage_duration_s > MAX_RENEWABLE_STAGE_S:
+            raise NHRValidationError(
+                "Renewable max_stage_duration_s cannot exceed 28800 s"
+            )
+        if workflow.max_sequence_duration_s > MAX_RENEWABLE_SEQUENCE_S:
+            raise NHRValidationError(
+                "Renewable max_sequence_duration_s cannot exceed 43200 s"
+            )
     if not configuration.stages:
         raise NHRValidationError("At least one stage is required")
 
@@ -398,7 +427,10 @@ def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware:
                 f"Stage {stage.name!r} requires voltage_limit_enabled=true"
             )
         if stage.type in {"constant_current", "cccv", "constant_power"}:
-            if stage.duration_s > 295.0:
+            if (
+                stage.duration_s > MAX_SINGLE_ARM_STATIC_STAGE_S
+                and not renewal_enabled
+            ):
                 raise NHRValidationError(
                     f"Static stage {stage.name!r} cannot exceed 295 s"
                 )
@@ -452,6 +484,14 @@ def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware:
                     "cutoff_current_a is supported only by CCCV stages"
                 )
         else:
+            if (
+                stage.duration_s > MAX_SINGLE_ARM_STATIC_STAGE_S
+                and not renewal_enabled
+            ):
+                raise NHRValidationError(
+                    f"Dynamic stage {stage.name!r} cannot exceed 295 s without "
+                    "arm lease renewal"
+                )
             if stage.csv_path is None or not stage.csv_path.is_file():
                 raise NHRValidationError(f"Stage {stage.name!r} CSV file does not exist")
             if stage.profile_kind not in {"current", "power"}:

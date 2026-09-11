@@ -14,6 +14,7 @@
   "workflow_limits": {
     "max_current_a": 2.0, "max_power_w": 250.0,
     "max_stage_duration_s": 120.0, "max_sequence_duration_s": 120.0,
+    "arm_lease_renewal_enabled": false,
     "approved": false, "profile_name": "UNAPPROVED CCCV workflow"
   },
   "stages": [{

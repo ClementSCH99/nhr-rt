@@ -120,7 +120,6 @@ class DynamicProfileStep(Step):
         baseline: float | None = None
         accumulated = 0.0
         previous_actual: float | None = None
-        renew_at: float | None = None
 
         for point_index, (point, next_point) in enumerate(zip(self.points, self.points[1:])):
             value = point.value
@@ -145,11 +144,6 @@ class DynamicProfileStep(Step):
                         remaining = self.points[-1].time_s - point.time_s + 2.0
                         lease = min(self.arm_lease_s, max(2.0, remaining))
                         context.instrument.arm(lease)
-                        renew_at = (
-                            time.monotonic() + lease - 30.0
-                            if remaining > lease
-                            else None
-                        )
                     context.instrument.read_measurement()
                     baseline = None
                     previous_actual = None
@@ -168,9 +162,6 @@ class DynamicProfileStep(Step):
                     raise NHRRoutineError(context.collector.error)
                 context.instrument.check_interlocks()
                 measurement = context.instrument.read_measurement()
-                if renew_at is not None and time.monotonic() >= renew_at:
-                    context.instrument.renew_arm(self.arm_lease_s)
-                    renew_at = time.monotonic() + self.arm_lease_s - 30.0
                 if active_mode is not None and context.result.initial_active_measurement is None:
                     context.result.initial_active_measurement = measurement
                 if self.termination is not None and active_mode is not None:
@@ -196,6 +187,11 @@ class DynamicProfileStep(Step):
                 remaining = segment_deadline - time.monotonic()
                 if remaining <= 0.0:
                     break
+                arm_lease_supervisor = getattr(
+                    context, "arm_lease_supervisor", None
+                )
+                if arm_lease_supervisor is not None:
+                    arm_lease_supervisor.checkpoint(measurement)
                 context.stop_event.wait(min(self.poll_interval_s, remaining))
 
         context.result.termination_reason = "profile_end"
@@ -247,6 +243,8 @@ class SequenceStage:
     name: str
     routine: Routine
     mode: OperatingState | None = None
+    type: str | None = None
+    duration_s: float | None = None
 
 
 @dataclass(slots=True)
@@ -366,6 +364,7 @@ class SequenceRunner:
         stop_event: threading.Event | None = None,
         progress_callback: Callable[[int, SequenceStage, str | None], None] | None = None,
         failure_handler: Callable[[Exception], bool] | None = None,
+        arm_lease_supervisor=None,
     ) -> None:
         self.instrument = instrument
         self.collector = collector
@@ -373,6 +372,7 @@ class SequenceRunner:
         self.stop_event = stop_event or threading.Event()
         self.progress_callback = progress_callback
         self.failure_handler = failure_handler
+        self.arm_lease_supervisor = arm_lease_supervisor
 
     def run(self, stages: Sequence[SequenceStage]) -> SequenceResult:
         if not stages:
@@ -391,20 +391,32 @@ class SequenceRunner:
             for stage_index, stage in enumerate(stages):
                 if self.progress_callback is not None:
                     self.progress_callback(stage_index, stage, None)
-                stage_result = RoutineRunner(
-                    self.instrument,
-                    self.collector,
-                    manage_collector=False,
-                    stop_event=self.stop_event,
-                    progress_callback=(
-                        lambda step, _event, index=stage_index, current=stage: (
-                            self.progress_callback(index, current, step)
-                            if self.progress_callback is not None
-                            else None
-                        )
-                    ),
-                    failure_handler=self.failure_handler,
-                ).run(stage.routine)
+                if self.arm_lease_supervisor is not None:
+                    self.arm_lease_supervisor.begin_stage(
+                        index=stage_index,
+                        name=stage.name,
+                        stage_type=stage.type,
+                        duration_s=stage.duration_s,
+                    )
+                try:
+                    stage_result = RoutineRunner(
+                        self.instrument,
+                        self.collector,
+                        manage_collector=False,
+                        stop_event=self.stop_event,
+                        progress_callback=(
+                            lambda step, _event, index=stage_index, current=stage: (
+                                self.progress_callback(index, current, step)
+                                if self.progress_callback is not None
+                                else None
+                            )
+                        ),
+                        failure_handler=self.failure_handler,
+                        arm_lease_supervisor=self.arm_lease_supervisor,
+                    ).run(stage.routine)
+                finally:
+                    if self.arm_lease_supervisor is not None:
+                        self.arm_lease_supervisor.end_stage()
                 result.stages.append(stage_result)
                 if stage_result.state != RoutineState.PASSED:
                     result.state = stage_result.state

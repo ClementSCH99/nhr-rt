@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .acquisition import AcquisitionCollector
+from .arm_lease import ArmLeaseSupervisor
 from .backends.ivi import IVIBackend
 from .backends.simulator import SimulatedBackend
 from .evidence import atomic_write_json
@@ -106,6 +107,7 @@ def _write_artifact_manifest(
             "instrument_id": instrument_id,
             "run_id": report["run_id"],
             "preflight": bool(report.get("preflight_only")),
+            "arm_lease": report.get("arm_lease", {"enabled": False}),
             "artifacts": artifacts,
         },
     )
@@ -146,6 +148,7 @@ def execute_workflow_on_runtime(
     simulator_initial_state_policy: str | None = None,
     external_interlock_evidence: Callable[[], Mapping[str, Any]] | None = None,
     runtime_safety_failure: Callable[[Exception], bool] | None = None,
+    arm_lease_supervisor: ArmLeaseSupervisor | None = None,
 ) -> WorkflowOutcome:
     """Execute an approved workflow on a service-owned runtime.
 
@@ -250,6 +253,12 @@ def execute_workflow_on_runtime(
         if preflight_only:
             report["preflight_passed"] = True
         else:
+            if configuration.workflow_limits.arm_lease_renewal_enabled:
+                if arm_lease_supervisor is None:
+                    raise RuntimeError(
+                        "Arm lease renewal requires a service-owned workflow run"
+                    )
+                arm_lease_supervisor.start_sequence()
             if configuration.watchdog_enabled:
                 instrument.set_watchdog(True)
                 if not instrument.read_watchdog():
@@ -263,6 +272,7 @@ def execute_workflow_on_runtime(
                 stop_event=stop_event,
                 progress_callback=progress_callback,
                 failure_handler=runtime_safety_failure,
+                arm_lease_supervisor=arm_lease_supervisor,
             ).run(planned_stages)
             report["sequence_result"] = to_jsonable(sequence_result)
             if sequence_result.state == RoutineState.STOPPED and stop_event.is_set():
@@ -283,6 +293,20 @@ def execute_workflow_on_runtime(
         else:
             report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
+        if arm_lease_supervisor is not None:
+            try:
+                arm_lease_supervisor.close(
+                    "workflow_cleanup_after_"
+                    + ("error" if "error" in report else "completion")
+                )
+                report["arm_lease"] = arm_lease_supervisor.snapshot()
+            except Exception as exc:
+                report["arm_lease_evidence_error"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
+                report.setdefault(
+                    "error", "Arm lease evidence could not be finalized"
+                )
         if cleanup_authorized:
             failures: list[str] = []
             emergency_used = False
@@ -352,7 +376,10 @@ def execute_workflow_on_runtime(
             report["final_safe_state_verified"] = False
         if external_interlock_evidence is not None:
             try:
-                report["external_interlocks"] = dict(external_interlock_evidence())
+                interlock_evidence = dict(external_interlock_evidence())
+                report["external_interlocks"] = interlock_evidence
+                if interlock_evidence.get("stop_cause") is not None:
+                    report["stop_cause"] = interlock_evidence["stop_cause"]
             except Exception as exc:
                 report["external_interlock_evidence_error"] = (
                     f"{type(exc).__name__}: {exc}"
@@ -393,6 +420,10 @@ def execute_workflow(request: WorkflowRequest) -> WorkflowOutcome:
     try:
         configuration = load_workflow_profile(request.profile)
         validate_workflow_profile(configuration, hardware=hardware)
+        if configuration.workflow_limits.arm_lease_renewal_enabled:
+            raise ValueError(
+                "Arm lease renewal is available only through the 32-bit service"
+            )
         if configuration.external_interlocks:
             raise ValueError(
                 "External interlock workflows require the service-owned snapshot runtime"

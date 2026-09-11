@@ -24,6 +24,7 @@ localhost HTTP/SSE contract.
 | `types` | Stable domain values exchanged between layers |
 | `backends` | Hardware protocol plus IVI and simulator implementations |
 | `instrument` | Serialized backend access, safety limits, arm lease, interlocks and safe state |
+| `arm_lease` | Service-owned bounded renewal, approved duration deadlines and renewal evidence |
 | `interlocks` | Fail-closed provider contract and provider composition |
 | `external_interlocks` | Snapshot validation, freshness, typed rule evaluation and runtime latching |
 | `acquisition` | Timed measurement collection and in-memory publication |
@@ -42,6 +43,12 @@ The dependency direction points toward `types`, never toward the CLI or HTTP
 layer. `service` owns `workflow_runs`, which injects the already-owned
 instrument and collector into `execution`. Execution does not create a backend
 on the service path and does not import a client or UI.
+
+Long CC, CCCV and CP stages use one optional service-owned
+`ArmLeaseSupervisor`. It is created only for an accepted registered workflow;
+clients and SSE observers cannot create, renew or retain its authority. The
+workflow loop supplies fresh measurements while a separate service thread
+enforces the approved stage and sequence wall-clock deadlines.
 
 ## Extension boundaries
 

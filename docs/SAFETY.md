@@ -19,6 +19,27 @@ emergency stop, fixture protection or an operator-approved test plan.
   disabled output and disabled watchdog, followed by an independent reconnect.
 - Only the 32-bit service owns a physical NHR in the supported architecture.
 
+## Long static stages
+
+CC, CCCV and CP stages remain limited to 295 seconds unless the approved
+`workflow_limits` explicitly contains `"arm_lease_renewal_enabled": true`.
+Renewal is available only through a registered service-owned workflow; the
+standalone runner rejects it. The service fixes each lease at no more than 300
+seconds and renews with a 60-second margin. Renewable stages are capped at
+28,800 seconds (8 hours), while complete sequences are capped at 43,200 seconds
+(12 hours). Each approved workflow should retain the lower limits appropriate
+to its actual test plan.
+
+Every renewal requires active service-owned acquisition, a fresh NHR
+measurement, watchdog readback ON, safe/fresh interlocks, unchanged approved
+safety limits and unchanged stage setpoints. Refusal requests controlled stop;
+the approved timeout escalates to emergency stop. Actual lease expiration uses
+emergency stop immediately. Renewal never changes a stage or sequence deadline.
+
+Runtime, `run-state.json`, `report.json` and `artifacts.json` retain the renewal
+decisions and stop cause. SSE only presents the runtime state and is never part
+of the renewal decision.
+
 ## Dynamic zero behavior
 
 A zero point inside a signed CSV keeps the current charge/discharge state and

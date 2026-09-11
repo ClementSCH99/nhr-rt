@@ -202,6 +202,29 @@ stage with a termination condition must reach that condition before its
 duration expires. The duration is then a maximum allowed time, not an alternate
 successful termination.
 
+### Enable a long CC, CCCV or CP stage
+
+The normal 295-second limit remains the default. For an approved registered
+workflow that genuinely requires a longer active stage, add one field to its
+already-approved `workflow_limits`:
+
+```json
+"arm_lease_renewal_enabled": true
+```
+
+Then set the existing `max_stage_duration_s`, `max_sequence_duration_s` and
+stage `duration_s` to the reviewed values. A renewable stage cannot exceed
+28,800 seconds (8 hours), and the complete sequence cannot exceed 43,200
+seconds (12 hours). These are absolute software ceilings, not recommended
+defaults: keep every workflow's approved limits as low as its actual test plan
+allows. Keep `watchdog_enabled` set to `true`. No service, client, monitor or
+SSE setting is needed. The standalone `nhr9300-run` path intentionally rejects
+renewal; start the registered workflow through the 32-bit service.
+
+During the run, inspect `runtime()["workflow"]["arm_lease"]`. Afterward, use
+`report.json` and `artifacts.json` as the durable renewal record. Do not infer a
+safe final state from client disconnection or SSE EOF.
+
 Example constant-current stage:
 
 ```json

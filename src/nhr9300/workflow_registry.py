@@ -161,6 +161,11 @@ class WorkflowRegistryEntry:
             "external_interlock_count": (
                 len(configuration.external_interlocks) if configuration else 0
             ),
+            "arm_lease_renewal_enabled": (
+                configuration.workflow_limits.arm_lease_renewal_enabled
+                if configuration
+                else False
+            ),
         }
 
 

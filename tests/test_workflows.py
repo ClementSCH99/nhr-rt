@@ -462,6 +462,53 @@ def test_workflow_contract_builds_all_stage_types(tmp_path) -> None:
     )
     validate_workflow_profile(cc_without_power_limit, hardware=False)
 
+    long_stage = replace(
+        configuration,
+        workflow_limits=replace(
+            configuration.workflow_limits,
+            max_stage_duration_s=28_800,
+            max_sequence_duration_s=43_200,
+        ),
+        stages=(replace(configuration.stages[0], duration_s=28_800),),
+    )
+    with pytest.raises(NHRValidationError, match="cannot exceed 295 s"):
+        validate_workflow_profile(long_stage, hardware=False)
+
+    renewable = replace(
+        long_stage,
+        workflow_limits=replace(
+            long_stage.workflow_limits,
+            arm_lease_renewal_enabled=True,
+        ),
+    )
+    validate_workflow_profile(renewable, hardware=False)
+
+    with pytest.raises(NHRValidationError, match="watchdog_enabled=true"):
+        validate_workflow_profile(
+            replace(renewable, watchdog_enabled=False), hardware=False
+        )
+
+    excessive_stage = replace(
+        renewable,
+        workflow_limits=replace(
+            renewable.workflow_limits,
+            max_stage_duration_s=28_800.1,
+        ),
+        stages=(replace(renewable.stages[0], duration_s=28_800.1),),
+    )
+    with pytest.raises(NHRValidationError, match="cannot exceed 28800 s"):
+        validate_workflow_profile(excessive_stage, hardware=False)
+
+    excessive_sequence = replace(
+        renewable,
+        workflow_limits=replace(
+            renewable.workflow_limits,
+            max_sequence_duration_s=43_200.1,
+        ),
+    )
+    with pytest.raises(NHRValidationError, match="cannot exceed 43200 s"):
+        validate_workflow_profile(excessive_sequence, hardware=False)
+
 
 def test_generic_workflow_examples_are_valid_but_unapproved() -> None:
     for path in Path("examples/workflows").glob("*.example.json"):
@@ -519,6 +566,38 @@ def test_workflow_cli_simulation_writes_a_safe_report(tmp_path, monkeypatch) -> 
     assert report["cleanup_status"]["enabled"] is False
     assert report["watchdog_after_reconnect"] is False
     assert report["dynamic_profile_files"] == []
+
+
+def test_standalone_runner_rejects_arm_lease_renewal(tmp_path) -> None:
+    profile = tmp_path / "workflow.json"
+    data = {
+        "test_description": "service-only renewal",
+        "bench_description": "simulator",
+        "stop_procedure": "service-owned stop",
+        "expected_resource": "sim",
+        "expected_serial_number": "SIM-9300",
+        "simulation_initial_voltage_v": 90,
+        "watchdog_enabled": True,
+        "safety_limits": {
+            "charge_current": 5, "charge_voltage_max": 100, "charge_power": 500,
+            "discharge_current": 5, "discharge_voltage_min": 80, "discharge_power": 500,
+            "approved": True, "profile_name": "approved-limits"
+        },
+        "workflow_limits": {
+            "max_current_a": 2, "max_power_w": 250,
+            "max_stage_duration_s": 10_800,
+            "max_sequence_duration_s": 10_800,
+            "arm_lease_renewal_enabled": True,
+            "approved": True, "profile_name": "approved-long-workflow"
+        },
+        "stages": [{"name": "rest", "type": "rest", "duration_s": 1}],
+    }
+    profile.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="only through the 32-bit service"):
+        execution.execute_workflow(
+            execution.WorkflowRequest(profile=profile, output=tmp_path / "results")
+        )
 
 
 def test_dynamic_profile_evidence_hashes_exact_csv_bytes(tmp_path) -> None:
