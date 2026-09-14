@@ -1,5 +1,5 @@
 {
-  "test_description": "Constant-power workflow template",
+  "test_description": "UNAPPROVED rest-only observation template",
   "bench_description": "REPLACE_WITH_REVIEWED_BENCH_DESCRIPTION",
   "stop_procedure": "REPLACE_WITH_REVIEWED_STOP_PROCEDURE",
   "expected_resource": "REPLACE_WITH_RESOURCE",
@@ -17,28 +17,18 @@
     "profile_name": "UNAPPROVED safety limits"
   },
   "workflow_limits": {
-    "max_current_a": 3.0,
+    "max_current_a": 2.0,
     "max_power_w": 250.0,
     "max_stage_duration_s": 60.0,
     "max_sequence_duration_s": 60.0,
     "approved": false,
-    "profile_name": "UNAPPROVED CP workflow"
+    "profile_name": "UNAPPROVED rest workflow"
   },
-  "stages": [{
-    "name": "constant-power",
-    "type": "constant_power",
-    "duration_s": 30.0,
-    "mode": "discharge",
-    "current_a": 3.0,
-    "voltage_v": 82.0,
-    "power_w": 200.0,
-    "voltage_limit_enabled": true,
-    "current_limit_enabled": true,
-    "power_limit_enabled": true,
-    "termination": {
-      "field": "energy_wh",
-      "operator": ">=",
-      "value": 1.0,
-      "relative": true}
-  }]
+  "stages": [
+    {
+      "name": "rest",
+      "type": "rest",
+      "duration_s": 10.0
+    }
+  ]
 }

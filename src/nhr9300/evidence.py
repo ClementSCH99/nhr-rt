@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import time
 import uuid
@@ -13,6 +14,18 @@ from .errors import NHREvidencePersistenceError
 from .types import to_jsonable
 
 EvidencePersistenceError = NHREvidencePersistenceError
+
+
+def describe_file(path: Path, role: str) -> dict[str, Any]:
+    """Hash closed evidence without loading a long test into memory."""
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+            size += len(block)
+    return {"role": role, "path": str(path.resolve()),
+            "size_bytes": size, "sha256": digest.hexdigest()}
 
 
 def atomic_write_json(

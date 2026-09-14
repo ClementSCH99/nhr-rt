@@ -72,6 +72,7 @@ def test_monitor_serves_local_assets_and_read_only_configuration() -> None:
             "refresh_interval_s": 1.0,
             "trend_points": 600,
             "read_only": True,
+            "service_url": "",
         }
         assert reader.calls == []
     finally:

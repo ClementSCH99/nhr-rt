@@ -566,6 +566,12 @@ class InstrumentManager:
                 "state": status["state"],
                 "state_name": status["state_name"],
                 "output_enabled": status["enabled"],
+                "startup_diagnostic": {
+                    "emergency_stop": "unknown",
+                    "inhibit": "unknown",
+                    "reason": "Current IVI status does not expose a qualified emergency-stop/inhibit signal",
+                    "last_error": status.get("last_error"),
+                },
                 "setpoints": status["setpoints"],
             },
             "measurement": {

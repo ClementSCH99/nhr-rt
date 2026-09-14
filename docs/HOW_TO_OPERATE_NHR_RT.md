@@ -1239,3 +1239,10 @@ for proposed product corrections and acceptance criteria.
 - [Runtime observability](RUNTIME_OBSERVABILITY.md)
 - [Monitor](MONITOR.md)
 - [Validation record](VALIDATION.md)
+
+
+## Guided runner and session finalization (September 2026)
+
+For the simplified two-terminal workflow, use [OPERATOR_RUNNER.md](OPERATOR_RUNNER.md).
+The [session evidence contract](SESSION_EVIDENCE.md) distinguishes closed run files
+from the live service acquisition CSV described above.

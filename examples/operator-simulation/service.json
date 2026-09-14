@@ -1,0 +1,22 @@
+{
+  "output_dir": "runs/operator-simulation",
+  "instruments": [
+    {
+      "id": "sim-operator",
+      "backend": "simulator",
+      "rate_hz": 10,
+      "remote_workflow_control": true
+    }
+  ],
+  "workflow_registry": [
+    {
+      "workflow_id": "sim-rest",
+      "instrument_id": "sim-operator",
+      "profile_path": "rest.json",
+      "expected_resource": "sim-operator",
+      "expected_serial_number": "SIM-9300",
+      "approved": true,
+      "expected_bundle_digest": "sha256:5e1e739b36409597438e9cca0f8557e19ca7917cea4ff067b2ab7ac1d67ce45f"
+    }
+  ]
+}

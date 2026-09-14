@@ -39,6 +39,9 @@ def test_runtime_snapshot_is_read_only_and_explicit_before_connection(tmp_path) 
         snapshot = client.runtime("sim-runtime")
 
         assert snapshot["schema_version"] == "1.0"
+        diagnostic = snapshot["instrument"].pop("startup_diagnostic")
+        assert diagnostic["emergency_stop"] == diagnostic["inhibit"] == "unknown"
+        assert diagnostic["last_error"] is None
         assert snapshot["instrument"] == {
             "instrument_id": "sim-runtime",
             "connected": False,

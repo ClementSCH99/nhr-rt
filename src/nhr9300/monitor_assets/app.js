@@ -1,7 +1,7 @@
 "use strict";
 
 const byId = (id) => document.getElementById(id);
-const history = { voltage: [], current: [], power: [] };
+const history = [];
 let config = { refresh_interval_s: 1, trend_points: 600, instrument_id: "—" };
 let lastSuccess = null;
 let lastMeasurementTimestamp = null;
@@ -28,7 +28,8 @@ function formatCondition(workflow) {
   const condition = workflow.termination;
   if (!condition) return "—";
   const value = condition.value ?? "—";
-  return `${condition.field} ${condition.operator} ${value}`;
+  const metric = workflow.termination_metric;
+  return `${condition.field}: ${metric ? numeric(metric.current) : "—"} ${condition.operator} ${value} ${metric?.unit || ""}`;
 }
 
 function formatProgressValue(progress) {
@@ -44,7 +45,8 @@ function renderWorkflow(workflow = {}) {
   setText("workflow-name", workflow.active ? (workflow.workflow_id || "Active workflow") : "No active workflow");
   const stage = workflow.stage;
   setText("workflow-stage", stage ? `${stage.index + 1} / ${stage.count} · ${stage.name}` : "—");
-  setText("workflow-step", workflow.step || "—");
+  setText("workflow-step", workflow.step_description || workflow.step || "—");
+  byId("workflow-step").title = workflow.step || "";
   setText("workflow-condition", formatCondition(workflow));
 
   const progress = workflow.progress;
@@ -57,26 +59,46 @@ function renderWorkflow(workflow = {}) {
     : `${formatProgressValue(progress)} · reviewed time bound`);
 }
 
-function renderInterlocks(interlocks = []) {
+function renderInterlocks(interlocks = [], external = []) {
   const region = byId("interlock-list");
   region.replaceChildren();
   if (!interlocks.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty-state";
-    empty.textContent = "No interlock data";
-    region.append(empty);
+    region.textContent = "No active interlock rules";
     return;
   }
   interlocks.forEach((item) => {
+    const extra = external.find((r) => r.rule_id === item.name) || {};
+    const rule = extra.rule || {};
+    const current = extra.current;
+    const value = current ? current.value : item.value;
+    const age = current ? current.age_s : item.age_s;
+    const formatValue = (v) => typeof v === "boolean" ? String(v) : numeric(v);
     const row = document.createElement("div");
     row.className = "interlock";
-    const name = document.createElement("span");
-    name.textContent = item.name || "Unnamed interlock";
+    const detail = document.createElement("span");
+    const bound = rule.comparison === "range" ? `${rule.minimum} .. ${rule.maximum}`
+      : rule.comparison === "minimum" ? `>= ${rule.minimum}`
+      : rule.comparison === "maximum" ? `<= ${rule.maximum}`
+      : rule.comparison === "equals" ? `= ${rule.expected}` : "";
+    let margin = null;
+    if (typeof value === "number" && Number.isFinite(value)) {
+      if (rule.comparison === "minimum") margin = value - rule.minimum;
+      if (rule.comparison === "maximum") margin = rule.maximum - value;
+      if (rule.comparison === "range") margin = Math.min(value - rule.minimum, rule.maximum - value);
+    }
+    detail.textContent = `${item.name || extra.rule_id || "Interlock"} · ${formatValue(value)} ${item.unit || extra.unit || ""}`
+      + (bound ? ` · rule ${bound}` : "")
+      + (margin == null ? "" : ` · margin ${numeric(margin)} ${item.unit || extra.unit || ""}`)
+      + ` · age ${numeric(age, 1)} s`
+      + (extra.latched ? ` · TRIGGER retained: ${formatValue(extra.value)} ${extra.unit || ""}` : "")
+      + (current?.source_rejection ? " · source rejected" : "")
+      + (current?.health && current.health !== "ok" ? ` · source ${current.health}` : "");
     const result = document.createElement("b");
-    const healthy = item.safe && item.fresh;
+    const fresh = item.fresh && (extra.max_age_s == null || (age != null && age <= extra.max_age_s));
+    const healthy = item.safe && fresh && extra.safe !== false && !extra.latched;
     result.className = healthy ? "" : "error";
-    result.textContent = healthy ? `SAFE · ${numeric(item.age_s, 1)} s` : (item.fresh ? "UNSAFE" : "STALE");
-    row.append(name, result);
+    result.textContent = healthy ? "SAFE" : `${extra.latched ? "LATCHED" : fresh ? "UNSAFE" : "STALE"} · ${extra.reason || item.reason || item.detail || ""}`;
+    row.append(detail, result);
     region.append(row);
   });
 }
@@ -94,31 +116,14 @@ function renderAlerts(alerts = []) {
 
 function pushTrend(measurement) {
   if (!measurement || measurement.timestamp_utc === lastMeasurementTimestamp) return;
+  const timestamp = Date.parse(measurement.timestamp_utc);
+  if (!Number.isFinite(timestamp)) return;
+  if (history.length && timestamp <= history[history.length - 1].timestamp) history.length = 0;
   lastMeasurementTimestamp = measurement.timestamp_utc;
-  [[history.voltage, measurement.voltage_v], [history.current, measurement.current_a], [history.power, measurement.power_w]]
-    .forEach(([series, value]) => {
-      series.push(Number(value));
-      if (series.length > config.trend_points) series.shift();
-    });
-  setText("trend-window", `Last ${history.voltage.length} of ${config.trend_points} samples`);
+  history.push({ timestamp, values: [measurement.voltage_v, measurement.current_a, measurement.power_w] });
+  if (history.length > config.trend_points) history.shift();
+  setText("trend-window", `${history.length} samples · UTC time axis`);
   drawChart();
-}
-
-function drawSeries(ctx, values, color, width, height) {
-  if (values.length < 2) return;
-  const finite = values.filter(Number.isFinite);
-  if (!finite.length) return;
-  let min = Math.min(...finite), max = Math.max(...finite);
-  if (max === min) { max += 1; min -= 1; }
-  ctx.beginPath();
-  values.forEach((value, index) => {
-    const x = 8 + index / Math.max(1, config.trend_points - 1) * (width - 16);
-    const y = 8 + (1 - (value - min) / (max - min)) * (height - 16);
-    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  });
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1.7;
-  ctx.stroke();
 }
 
 function drawChart() {
@@ -130,15 +135,42 @@ function drawChart() {
   const ctx = canvas.getContext("2d");
   ctx.scale(ratio, ratio);
   const width = rect.width, height = rect.height;
-  ctx.strokeStyle = "#1e3440";
-  ctx.lineWidth = 1;
-  for (let row = 1; row < 4; row += 1) {
-    const y = row * height / 4;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
-  }
-  drawSeries(ctx, history.voltage, "#35d4e8", width, height);
-  drawSeries(ctx, history.current, "#5794ff", width, height);
-  drawSeries(ctx, history.power, "#ffb84d", width, height);
+  const left = 64, right = Math.max(left + 1, width - 15), panel = (height - 30) / 3;
+  const end = history.length ? history[history.length - 1].timestamp : Date.now();
+  const start = history.length > 1 ? history[0].timestamp : end - 1000;
+  const x = (t) => left + (t - start) / Math.max(1, end - start) * (right - left);
+  ctx.font = "11px sans-serif";
+  [["Voltage", "V", "#35d4e8"], ["Current", "A", "#5794ff"], ["Power", "W", "#ffb84d"]].forEach(([name, unit, color], i) => {
+    const top = i * panel + 24, bottom = (i + 1) * panel - 12;
+    const values = history.map((p) => p.values[i]).filter((v) => typeof v === "number" && Number.isFinite(v));
+    let low = values.length ? Math.min(...values) : 0, high = values.length ? Math.max(...values) : 1;
+    if (low === high) { low -= 1; high += 1; }
+    const y = (v) => bottom - (v - low) / (high - low) * (bottom - top);
+    ctx.fillStyle = color;
+    ctx.fillText(`${name} (${unit}) · ${numeric(history.length ? history[history.length - 1].values[i] : null)}`, left, top - 9);
+    for (let tick = 0; tick <= 2; tick++) {
+      const v = low + (high - low) * tick / 2;
+      ctx.fillStyle = "#a9bdca";
+      ctx.fillText(Number(v.toPrecision(4)).toString(), 2, y(v) + 3);
+      ctx.strokeStyle = "#1e3440"; ctx.beginPath(); ctx.moveTo(left, y(v)); ctx.lineTo(right, y(v)); ctx.stroke();
+    }
+    ctx.beginPath();
+    let previous = null;
+    history.forEach((p) => {
+      const v = p.values[i];
+      if (typeof v !== "number" || !Number.isFinite(v)) { previous = null; return; }
+      if (!previous || p.timestamp - previous.timestamp > config.refresh_interval_s * 2500) ctx.moveTo(x(p.timestamp), y(v));
+      else ctx.lineTo(x(p.timestamp), y(v));
+      previous = p;
+    });
+    ctx.strokeStyle = color; ctx.lineWidth = 1.7; ctx.stroke();
+  });
+  ctx.fillStyle = "#a9bdca";
+  [start, (start + end) / 2, end].forEach((t, i) => {
+    ctx.textAlign = i === 0 ? "left" : i === 2 ? "right" : "center";
+    ctx.fillText(new Date(t).toISOString().slice(11, 19), x(t), height - 4);
+  });
+  ctx.textAlign = "left";
 }
 
 function renderSnapshot(snapshot) {
@@ -166,7 +198,7 @@ function renderSnapshot(snapshot) {
   setText("charge-wh", numeric(totals.energy_charge_wh, 2));
   setText("discharge-wh", numeric(totals.energy_discharge_wh, 2));
   renderWorkflow(snapshot.workflow);
-  renderInterlocks(snapshot.interlocks?.results || []);
+  renderInterlocks(snapshot.interlocks?.results || [], snapshot.external_sources?.results || []);
   renderAlerts(snapshot.alerts || []);
 
   const limits = snapshot.effective_power_limits || {};
@@ -182,6 +214,11 @@ function renderSnapshot(snapshot) {
   setText("sample-count", acquisition.sample_count ?? "—");
   setText("observed-rate", acquisition.observed_rate_hz == null ? "—" : `${numeric(acquisition.observed_rate_hz, 2)} Hz`);
   setText("evidence-path", acquisition.evidence_path || "—");
+  const run = snapshot.workflow?.last_run || snapshot.workflow || {};
+  const recording = run.recording || {};
+  setText("recording-state", `${recording.state || "No session"}${recording.error ? " · " + recording.error : ""}`);
+  setText("session-path", recording.manifest_path || recording.path || "—");
+  setText("last-outcome", run.outcome || run.state || "—");
 }
 
 function setLinkHealthy() {

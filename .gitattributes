@@ -1,0 +1,2 @@
+# The runnable simulator fixture has a checked-in byte-level bundle digest.
+examples/operator-simulation/rest.json text eol=lf

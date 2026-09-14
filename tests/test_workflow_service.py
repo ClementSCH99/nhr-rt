@@ -550,6 +550,7 @@ def test_workflow_failure_converges_on_verified_safe_state(
         assert final["state"] == "failed"
         assert "forced failure" in final["error"]
         assert final["final_safe_state"]["verified"] is True
+        assert final["recording"]["finalized"] is True
         backend = manager.get("sim-remote").instrument._backend
         assert backend.enabled is False
         assert backend.watchdog_enabled is False
@@ -734,14 +735,14 @@ def test_approved_duration_overrun_uses_controlled_then_emergency_stop(
 def test_renewal_failure_requests_controlled_stop_and_preserves_cause(
     tmp_path, monkeypatch
 ) -> None:
-    profile = _profile(tmp_path / "workflow.json", duration_s=0.4)
+    profile = _profile(tmp_path / "workflow.json", duration_s=8.0)
     data = json.loads(profile.read_text(encoding="utf-8"))
     data["workflow_limits"]["arm_lease_renewal_enabled"] = True
     data["stages"] = [
         {
             "name": "failing-renewal-cc",
             "type": "constant_current",
-            "duration_s": 0.4,
+            "duration_s": 8.0,
             "mode": "charge",
             "current_a": 2,
             "voltage_v": 99,
@@ -783,7 +784,12 @@ def test_renewal_failure_requests_controlled_stop_and_preserves_cause(
             workflow_id="approved-rest-v1",
             bundle_digest=digest,
         )
-        final = _wait_terminal(client, run["run_id"])
+        # Renewal is forced at 0.1 s. Leave the independent stage-duration
+        # guard enough headroom for Windows evidence I/O so this test exercises
+        # renewal failure rather than an unrelated scheduling/duration overrun.
+        final = client.wait_workflow(
+            "sim-remote", run["run_id"], timeout_s=20, poll_interval_s=0.1
+        )
         report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
 
         assert final["state"] == "stopped"

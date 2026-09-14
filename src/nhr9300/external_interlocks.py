@@ -384,6 +384,22 @@ class ExternalInterlockManager:
                     }
                 )
             results = [self._result_public(item) for item in self.signals()]
+            rules = {rule.rule_id: rule for rule in self._rules}
+            for result in results:
+                rule = rules[result["rule_id"]]
+                snapshot = self._snapshots.get(rule.source_id)
+                result["rule"] = {"comparison": rule.comparison, "minimum": rule.minimum,
+                                  "maximum": rule.maximum, "expected": rule.expected}
+                result["latched"] = rule.rule_id in self._latched
+                # Do not reevaluate or mutate the latch to obtain display data.
+                # Trigger evidence remains frozen; current values are separate.
+                result["current"] = None if snapshot is None else {
+                    "value": snapshot.signals.get(rule.signal),
+                    "age_s": max(0.0, now - snapshot.data_monotonic),
+                    "health": snapshot.health,
+                    "source_rejection": self._source_faults.get(rule.source_id),
+                    "source_sequence": snapshot.sequence,
+                }
             return {
                 "status": "configured" if self._rules else "inactive",
                 "phase": self._phase,

@@ -49,6 +49,7 @@ class WorkflowRunSnapshot(TypedDict, total=False):
     stop_requested: bool
     report_path: str
     error: str | None
+    recording: dict[str, Any]
 
 
 class RuntimeSnapshot(TypedDict, total=False):

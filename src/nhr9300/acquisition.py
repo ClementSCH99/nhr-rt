@@ -115,6 +115,8 @@ class AcquisitionCollector:
         self._overrun_count = 0
         self._statistics_lock = threading.Lock()
         self._sink_lock = threading.Lock()
+        self._session_sink: CsvMeasurementSink | None = None
+        self._session_error: str | None = None
         self._cached_status: InstrumentStatus | None = None
         self._status_read_monotonic: float | None = None
         self.error: str | None = None
@@ -267,6 +269,33 @@ class AcquisitionCollector:
             error=error,
         )
 
+    def start_session_recording(self, path: Path) -> None:
+        """Open a run-owned CSV, independent of collector restarts/observers."""
+        with self._sink_lock:
+            if self._session_sink is not None:
+                raise NHRValidationError("A session recording is already open")
+            sink = CsvMeasurementSink(path)
+            try:
+                sink.open(self.CSV_FIELDS)
+            except Exception:
+                sink.close()
+                raise
+            self._session_sink = sink
+            self._session_error = None
+
+    def finalize_session_recording(self) -> None:
+        """Close only the session file; monitoring and safety keep running.
+
+        The sink lock excludes in-flight writes. A failed close is retained for
+        explicit recovery and cannot be reported as a finalized recording.
+        """
+        with self._sink_lock:
+            if self._session_sink is not None:
+                self._session_sink.close()
+                self._session_sink = None
+            if self._session_error:
+                raise OSError(self._session_error)
+
     def csv_snapshot(self) -> tuple[list[str], list[dict[str, str]]]:
         """Read one consistent snapshot of the service-owned CSV."""
         if self.csv_path is None:
@@ -351,11 +380,17 @@ class AcquisitionCollector:
                         if self._first_sample_at is None:
                             self._first_sample_at = measurement.timestamp_utc
                         self._sample_times.append(measurement.monotonic_s)
-                    if active_sinks:
+                    if active_sinks or self._session_sink is not None:
                         row = self._row(sample)
                         with self._sink_lock:
                             for sink in active_sinks:
                                 sink.write(row)
+                            if self._session_sink is not None:
+                                try:
+                                    self._session_sink.write(row)
+                                except Exception as exc:
+                                    self._session_error = f"Session recording failed: {exc}"
+                                    raise
                 except Exception as exc:
                     self.error = str(exc)
                     with self._callbacks_lock:

@@ -1,19 +1,32 @@
 # NHR Remote Testing roadmap
 
-**Last updated:** September 10, 2026
+**Last updated:** September 14, 2026
 
 **Current release:** v0.2.0
 
-**Current phase:** Milestone 5 external-integration and physical-validation planning
+**Current phase:** Operator consolidation before Milestone 6
 
 **Target release:** v0.3.0
+
+## Operator consolidation before M6
+
+The accepted [operator improvement plan](docs/OPERATOR_IMPROVEMENT_PLAN.md)
+adds run-owned finalized evidence, a guided CLI, read-only HMI improvements and
+an unapproved example catalogue. See the [runner guide](docs/OPERATOR_RUNNER.md).
+This work is limited to NHR-RT; CAN-PY automatic finalization/merge remains a
+separate integration dependency. M1-M5 software is implemented; physical
+acceptance remains limited to the documented configurations/campaigns below.
+M6 remains the next functional objective, followed by M7 integrated release
+validation. Operator acceptance and physical qualification are separate gates.
 
 ## Product direction
 
 Milestones 1–4 and their Expansion Phase 2 validation campaign are complete for
-the exact reviewed configurations. The immediate next activity is the separate
-[operator proficiency exercise track](docs/OPERATOR_PROFICIENCY_EXERCISES.md).
-It does not extend physical authority or replace the Milestone 5–7 gates below.
+the exact reviewed configurations. Operator consolidation and its acceptance
+exercise now precede M6. The separate
+[operator proficiency exercise track](docs/OPERATOR_PROFICIENCY_EXERCISES.md)
+remains available; neither track extends physical authority or replaces the
+Milestone 5–7 gates below.
 
 Version v0.2.0 closed the first expansion phase. The 32-bit IVI service,
 `NHR9300` safety facade, simulator and supervised workflow engine now support

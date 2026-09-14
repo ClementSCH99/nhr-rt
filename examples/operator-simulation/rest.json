@@ -1,0 +1,34 @@
+{
+  "test_description": "SIMULATOR ONLY operator practice",
+  "bench_description": "Software simulator only; no DUT",
+  "stop_procedure": "Request cooperative stop in the operator runner",
+  "expected_resource": "sim-operator",
+  "expected_serial_number": "SIM-9300",
+  "simulation_initial_voltage_v": 90.0,
+  "watchdog_enabled": true,
+  "safety_limits": {
+    "charge_current": 5.0,
+    "charge_voltage_max": 100.0,
+    "charge_power": 500.0,
+    "discharge_current": 5.0,
+    "discharge_voltage_min": 80.0,
+    "discharge_power": 500.0,
+    "approved": true,
+    "profile_name": "SIMULATOR ONLY safety_limits"
+  },
+  "workflow_limits": {
+    "max_current_a": 2.0,
+    "max_power_w": 250.0,
+    "max_stage_duration_s": 60.0,
+    "max_sequence_duration_s": 60.0,
+    "approved": true,
+    "profile_name": "SIMULATOR ONLY workflow_limits"
+  },
+  "stages": [
+    {
+      "name": "rest",
+      "type": "rest",
+      "duration_s": 5
+    }
+  ]
+}

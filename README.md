@@ -7,6 +7,11 @@ simulator for software validation.
 
 ## Design
 
+For the guided two-terminal operator workflow, see
+[Operator runner](docs/OPERATOR_RUNNER.md). Try the
+[software-only exercise](examples/operator-simulation/README.md) first.
+The [consolidation plan](docs/OPERATOR_IMPROVEMENT_PLAN.md) tracks work before M6.
+
 - One 32-bit process owns IVI-COM and each physical NHR.
 - `NHR9300` serializes backend calls and enforces limits, arm leases, fresh
   measurements, interlocks and safe cleanup.

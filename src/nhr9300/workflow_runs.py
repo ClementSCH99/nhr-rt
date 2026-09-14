@@ -24,7 +24,7 @@ from .errors import (
     NHRValidationError,
 )
 from .external_interlocks import ExternalInterlockManager
-from .evidence import atomic_write_json
+from .evidence import atomic_write_json, describe_file
 from .execution import execute_workflow_on_runtime
 from .instrument import NHR9300
 from .routines import RoutineRunner
@@ -114,6 +114,8 @@ class WorkflowRunController:
                     "verified": False,
                     "reason": "Service process ended before terminal persistence",
                 }
+                state["recording"] = {"state": "interrupted", "finalized": False,
+                                      "error": "Service ended before finalization"}
                 self._recovery_required = True
                 self._runs[run_id] = state
                 self._persist(run_id)
@@ -309,6 +311,8 @@ class WorkflowRunController:
                 "arm_lease": {"enabled": False},
                 "report_path": str((self._run_dir(run_id) / "report.json").resolve()),
                 "final_safe_state": {"verified": False},
+                "recording": {"state": "pending", "finalized": False,
+                              "path": str((self._run_dir(run_id) / "session.csv").resolve())},
                 "error": None,
                 "_counter_previous": {},
             }
@@ -377,6 +381,24 @@ class WorkflowRunController:
                 "duration_s": profile.duration_s,
             }
             run["step"] = step
+            kind = (step or "").partition("_")[2]
+            labels = {"wait": "Running under measurement surveillance",
+                      "arm": "Arming the reviewed lease", "measure": "Reading a measurement",
+                      "setpoints": "Applying reviewed setpoints", "enable": "Enabling output",
+                      "disable": "Disabling output", "standby": "Returning to standby",
+                      "configure_limits": "Configuring reviewed limits",
+                      "dynamic_profile": "Executing the time profile"}
+            explanation = labels.get(kind, step or "Preparing stage")
+            if kind == "wait":
+                if profile.type == "rest":
+                    explanation = "Rest: measuring until the reviewed duration ends"
+                elif profile.type == "cccv":
+                    explanation = "CCCV active: current cutoff applies after voltage activation; timeout remains enforced"
+                elif termination:
+                    explanation = "Test active: waiting for the termination condition; timeout remains enforced"
+                else:
+                    explanation = "Test active: maintaining operation until the reviewed duration ends"
+            run["step_description"] = explanation
             run["termination"] = termination
             self._persist(run_id)
 
@@ -401,6 +423,13 @@ class WorkflowRunController:
                 entry.bundle.verify_unchanged()  # type: ignore[union-attr]
                 target = self._run_dir(run_id)
                 profile = entry.bundle.materialize(target / "bundle")  # type: ignore[union-attr]
+                # Own surveillance before entering the reusable executor, which
+                # otherwise stops a collector it had to start itself.
+                self.instrument.connect()
+                self.collector.start()
+                self.collector.start_session_recording(target / "session.csv")
+                self._update(run_id, recording={"state": "recording", "finalized": False,
+                             "path": str((target / "session.csv").resolve())})
                 configuration = entry.bundle.configuration  # type: ignore[union-attr]
                 if configuration.workflow_limits.arm_lease_renewal_enabled:
                     supervisor = ArmLeaseSupervisor(
@@ -462,6 +491,12 @@ class WorkflowRunController:
                 )
             }
             final_verified = report.get("final_safe_state_verified", False)
+            self._update(run_id, state="finalizing",
+                         final_safe_state={"verified": final_verified,
+                                           "reconnected": "status_after_reconnect" in report})
+            recording = self._finalize_recording(run_id, final_verified)
+            if not recording["finalized"]:
+                state = outcome_name = "failed"
             if not final_verified:
                 self._recovery_required = True
             self._update(
@@ -470,11 +505,12 @@ class WorkflowRunController:
                 outcome=outcome_name,
                 ended_at_utc=_utc_now(),
                 totals=totals,
+                recording=recording,
                 final_safe_state={
                     "verified": final_verified,
                     "reconnected": "status_after_reconnect" in report,
                 },
-                error=report.get("error") or report.get("cleanup_error"),
+                error=report.get("error") or report.get("cleanup_error") or recording.get("error"),
             )
         except Exception as exc:
             self._recovery_required = True
@@ -490,6 +526,7 @@ class WorkflowRunController:
                 outcome="failed",
                 ended_at_utc=_utc_now(),
                 error=f"{type(exc).__name__}: {detail}",
+                recording=self._finalize_recording(run_id, False),
                 final_safe_state={"verified": False},
             )
         finally:
@@ -499,6 +536,34 @@ class WorkflowRunController:
                 self._arm_supervisors.pop(run_id, None)
                 if self._active_run_id == run_id:
                     self._active_run_id = None
+
+    def _finalize_recording(self, run_id: str, safe: bool) -> dict[str, Any]:
+        """Close the run CSV before publishing terminal state and stable hashes.
+
+        Monitoring remains active. Neither its rotating CSV nor run-state.json
+        belongs in this immutable manifest. Failed closure stays visibly failed.
+        """
+        target = self._run_dir(run_id)
+        result: dict[str, Any] = {"state": "failed", "finalized": False,
+                                  "path": str((target / "session.csv").resolve())}
+        try:
+            self.collector.finalize_session_recording()
+            if not safe:
+                raise RuntimeError("Final safe state was not verified; evidence is incomplete")
+            artifacts = json.loads((target / "artifacts.json").read_text(encoding="utf-8"))
+            files = [describe_file(Path(item["path"]), item["role"])
+                     for item in artifacts["artifacts"]]
+            files.append(describe_file(target / "session.csv", "session_measurements"))
+            manifest = target / "session-evidence.json"
+            result.update(state="finalized", finalized=True, files=files,
+                          manifest_path=str(manifest.resolve()), finalized_at_utc=_utc_now())
+            atomic_write_json(manifest, {"schema_version": 1, "run_id": run_id,
+                              "instrument_id": self.instrument.instrument_id, **result})
+        except Exception as exc:
+            result.update(state="failed", finalized=False, error=f"{type(exc).__name__}: {exc}")
+            result.pop("files", None)
+            result.pop("finalized_at_utc", None)
+        return result
 
     def _arm_lease_update(self, run_id: str, snapshot: Mapping[str, Any]) -> None:
         """Persist renewal evidence in the service-owned runtime manifest."""
@@ -608,7 +673,10 @@ class WorkflowRunController:
         with self._state_lock:
             run_id = self._active_run_id
         if run_id is None:
+            with self._state_lock:
+                latest = next(reversed(self._runs.values()), None) if self._runs else None
             return {
+                "last_run": self._public(latest) if latest else None,
                 "active": False,
                 "state": "idle",
                 "progress": None,
@@ -663,6 +731,9 @@ class WorkflowRunController:
         with self._state_lock:
             run = self._runs[run_id]
             if run["state"] in TERMINAL_STATES:
+                return
+            if run.get("final_safe_state", {}).get("verified"):
+                # Hashing closed evidence is not a physical stop timeout.
                 return
             run["emergency_fallback_requested"] = True
             self._persist(run_id)

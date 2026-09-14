@@ -111,6 +111,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
                     "refresh_interval_s": self.refresh_interval_s,
                     "trend_points": self.trend_points,
                     "read_only": True,
+                    "service_url": getattr(self.runtime_reader, "base_url", "").removesuffix("/api/v1"),
                 },
                 include_body=include_body,
             )
