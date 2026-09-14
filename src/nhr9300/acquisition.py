@@ -290,9 +290,14 @@ class AcquisitionCollector:
         explicit recovery and cannot be reported as a finalized recording.
         """
         with self._sink_lock:
-            if self._session_sink is not None:
-                self._session_sink.close()
-                self._session_sink = None
+            sink = self._session_sink
+            if sink is not None:
+                try:
+                    sink.close()
+                finally:
+                    # A close error must fail this recording, but it must not
+                    # leave the collector permanently reserved by a dead sink.
+                    self._session_sink = None
             if self._session_error:
                 raise OSError(self._session_error)
 

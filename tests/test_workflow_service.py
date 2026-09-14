@@ -437,6 +437,9 @@ def test_interrupted_manifest_blocks_start_until_preflight(tmp_path) -> None:
         recovered = client.workflow_run("sim-remote", prior_id)
         assert recovered["state"] == "interrupted"
         assert recovered["final_safe_state"]["verified"] is False
+        assert recovered["recording"]["path"] == str(
+            (prior_dir / "session.csv").resolve()
+        )
         with pytest.raises(NHRError, match="successful preflight"):
             client.start_workflow(
                 "sim-remote",

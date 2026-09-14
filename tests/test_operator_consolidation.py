@@ -72,10 +72,13 @@ def test_finalized_files_stay_stable_across_observer_detach_and_second_run(servi
 def test_failed_close_never_advertises_finalized_evidence(service, monkeypatch):
     _, config, _, client, _ = service
     original = CsvMeasurementSink.close
+    failed_once = False
 
     def fail_session(self):
+        nonlocal failed_once
         original(self)
-        if self.path.name == "session.csv":
+        if self.path.name == "session.csv" and not failed_once:
+            failed_once = True
             raise PermissionError("injected close failure")
 
     monkeypatch.setattr(CsvMeasurementSink, "close", fail_session)
@@ -87,6 +90,32 @@ def test_failed_close_never_advertises_finalized_evidence(service, monkeypatch):
     assert "injected close failure" in final["recording"]["error"]
     assert "files" not in final["recording"]
     assert not Path(final["recording"]["path"]).with_name("session-evidence.json").exists()
+    # The failed evidence sink must not reserve the collector indefinitely.
+    second = start(client, config)
+    recovered = client.wait_workflow("sim-remote", second["run_id"], timeout_s=10)
+    assert recovered["state"] == "passed"
+    assert recovered["recording"]["finalized"]
+
+
+def test_runtime_last_run_uses_persisted_chronology(service):
+    _, _, manager, _, _ = service
+    controller = manager.get("sim-remote").workflow_controller
+    assert controller is not None
+    newer = {
+        "run_id": "newer",
+        "instrument_id": "sim-remote",
+        "state": "passed",
+        "accepted_at_utc": "2026-09-14T14:00:00+00:00",
+    }
+    older = {
+        "run_id": "older",
+        "instrument_id": "sim-remote",
+        "state": "passed",
+        "accepted_at_utc": "2026-09-14T13:00:00+00:00",
+    }
+    # Deliberately insert the older run last to model arbitrary glob ordering.
+    controller._runs = {"newer": newer, "older": older}
+    assert controller.runtime_snapshot()["last_run"]["run_id"] == "newer"
 
 
 def console(service, answers=()):

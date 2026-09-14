@@ -114,8 +114,12 @@ class WorkflowRunController:
                     "verified": False,
                     "reason": "Service process ended before terminal persistence",
                 }
-                state["recording"] = {"state": "interrupted", "finalized": False,
-                                      "error": "Service ended before finalization"}
+                state["recording"] = {
+                    "state": "interrupted",
+                    "finalized": False,
+                    "path": str((path.parent / "session.csv").resolve()),
+                    "error": "Service ended before finalization",
+                }
                 self._recovery_required = True
                 self._runs[run_id] = state
                 self._persist(run_id)
@@ -674,7 +678,11 @@ class WorkflowRunController:
             run_id = self._active_run_id
         if run_id is None:
             with self._state_lock:
-                latest = next(reversed(self._runs.values()), None) if self._runs else None
+                latest = (
+                    max(self._runs.values(), key=self._run_order_key)
+                    if self._runs
+                    else None
+                )
             return {
                 "last_run": self._public(latest) if latest else None,
                 "active": False,
@@ -686,6 +694,22 @@ class WorkflowRunController:
         result["active"] = result.get("state") not in TERMINAL_STATES
         result["progress_available"] = result.get("progress") is not None
         return result
+
+    @staticmethod
+    def _run_order_key(run: Mapping[str, Any]) -> tuple[float, str]:
+        """Order persisted and live runs without relying on directory order."""
+        for field in ("accepted_at_utc", "started_at_utc", "ended_at_utc"):
+            value = run.get(field)
+            if isinstance(value, datetime):
+                return value.timestamp(), str(run.get("run_id", ""))
+            if isinstance(value, str):
+                try:
+                    return datetime.fromisoformat(value).timestamp(), str(
+                        run.get("run_id", "")
+                    )
+                except ValueError:
+                    continue
+        return 0.0, str(run.get("run_id", ""))
 
     def stop(
         self,
