@@ -215,6 +215,23 @@ stage with a termination condition must reach that condition before its
 duration expires. The duration is then a maximum allowed time, not an alternate
 successful termination.
 
+### Record relaxation after a successful sequence
+
+Set `workflow_limits.post_sequence_rest_s` to a reviewed number of seconds to
+append an inactive measured rest after all configured stages pass:
+
+```json
+"post_sequence_rest_s": 30.0
+```
+
+The default is `0`. A positive value creates an explicit
+`post-sequence-rest` stage. Its rows are included in `sequence.csv`, its own
+stage CSV and the canonical `session.csv`. Output is disabled throughout the
+rest, while acquisition, watchdog and applicable interlocks remain active. The
+rest is skipped after a stopped or failed stage, is bounded by
+`max_stage_duration_s`, and counts toward `max_sequence_duration_s`. Keep
+CAN/BMS publication active until this rest and workflow finalization complete.
+
 ### Enable a long CC, CCCV or CP stage
 
 The normal 295-second limit remains the default. For an approved registered
@@ -304,6 +321,7 @@ Configuration fields used by the current service:
 | instrument | `primitive_compatibility_control` | False; gates sensitive legacy primitives on IVI |
 | instrument | `remote_workflow_control` | False; gates registered workflow preflight/start |
 | instrument | `controlled_stop_policy` | Required approved timeout policy for physical remote workflows |
+| workflow limits | `post_sequence_rest_s` | `0`; optional inactive measured relaxation appended after successful stages |
 | registry | `workflow_id` | Required unique selection ID |
 | registry | `instrument_id` | Instrument allowed to execute the workflow |
 | registry | `profile_path` | Local profile path, relative to service config when not absolute |
@@ -863,16 +881,26 @@ Typical service output can include:
 
 ```text
 output_dir/
-  sim-l3_<timestamp>.csv                 general service acquisition
+  surveillance/
+    sim-l3/
+      acquisition_<timestamp>.csv       continuous service surveillance
   workflow-preflights/
     preflight-.../
       report.json                        preflight evidence
+      artifacts.json                     labeled preflight evidence
+      measurements/
+        preflight.csv                    preflight-scoped measurements
   workflow-runs/
     <run-id>/
       run-state.json                     durable lifecycle snapshot
       report.json                        terminal workflow report
-      ...sequence....csv                 complete workflow samples
-      ...stage....csv                    stage-specific samples
+      artifacts.json                     labeled workflow evidence
+      session-evidence.json              finalized canonical manifest
+      measurements/
+        session.csv                      canonical run-scoped measurements
+        sequence.csv                     stages plus post-sequence rest
+        stages/
+          01-<stage-name>.csv            stage-specific measurements
 ```
 
 Exact filenames are reported by the software. Do not select evidence solely by
@@ -888,6 +916,10 @@ Why multiple general CSVs may appear:
 The general CSV may therefore continue growing after terminal `stopped` or
 `passed`. Determine workflow activity from `workflow_run()`/`runtime()`, and use
 the files referenced by the terminal report for workflow evidence.
+
+`preflight.csv` belongs to its `workflow-preflights/<id>` directory. General
+surveillance files remain separate even when a reconnect rotates one during a
+preflight or workflow cleanup.
 
 ### Reconcile a terminal report
 
@@ -1168,7 +1200,8 @@ stop or safe-state verification.
 1. Wait for terminal workflow state or request stop and poll terminal.
 2. Record report path and final safe state.
 3. Stop SSE workers with bounded joins.
-4. Stop the service with `Ctrl+C` and let cleanup finish.
+4. Use operator action `10 Controlled shutdown`, or stop an attached service
+   with `Ctrl+C`, and let cleanup finish.
 5. Verify port 9300 no longer listens.
 6. Archive the intended report and its referenced evidence.
 
@@ -1259,11 +1292,25 @@ Typical sequence:
    finalization;
 7. recover the request journal before starting another run.
 
+The runner rejects `--instrument-id` before showing the menu unless the exact
+ID is present in the selected configuration. Action `10` is distinct from
+observer detach: it stops and finalizes an active workflow, requires the exact
+`CONTROLLED_SERVICE_SHUTDOWN` acknowledgement, asks the service to close every
+configured instrument safely, waits for port 9300 to close, and stops the HMI
+process only when that process was launched by the same runner. A joined HMI
+is left running because the runner does not own it.
+
 The console never restarts a shared service automatically. `Q`, EOF and Ctrl+C
 detach only the console: the service, monitor and any workflow remain alive.
 Logs and the uncertain-start journal are stored in `operator-logs` beside the
 configuration. Do not delete an unresolved journal; recovery reuses the same
 request UUID so a lost start response cannot silently create a duplicate.
+
+In the HMI, external interlocks show their value, condition, age and state;
+numeric margin is intentionally omitted. A retained trigger remains visible.
+`operator_supervision` is a static configuration declaration, not a sensor or
+presence heartbeat, so it is labeled as configuration and has no displayed
+age.
 
 ## 26. Publish CAN/BMS external snapshots
 

@@ -401,7 +401,8 @@ def test_workflow_contract_builds_all_stage_types(tmp_path) -> None:
         },
         "workflow_limits": {
             "max_current_a": 5, "max_power_w": 500, "max_stage_duration_s": 10,
-            "max_sequence_duration_s": 30, "approved": True, "profile_name": "approved-workflow"
+            "max_sequence_duration_s": 30, "approved": True, "profile_name": "approved-workflow",
+            "post_sequence_rest_s": 1
         },
         "stages": [
             {"name": "cccv", "type": "cccv", "duration_s": 2, "mode": "charge", "current_a": 2, "voltage_v": 95, "power_w": 300, "voltage_limit_enabled": True, "current_limit_enabled": True, "power_limit_enabled": False, "cutoff_current_a": 0.2},
@@ -417,7 +418,11 @@ def test_workflow_contract_builds_all_stage_types(tmp_path) -> None:
     validate_workflow_profile(configuration, hardware=False)
     validate_workflow_profile(configuration, hardware=True)
     sequence = configuration.sequence(configure_limits=True)
-    assert [stage.name for stage in sequence] == ["cccv", "rest", "cp", "csv"]
+    assert [stage.name for stage in sequence] == [
+        "cccv", "rest", "cp", "csv", "post-sequence-rest"
+    ]
+    assert sequence[-1].type == "rest"
+    assert sequence[-1].duration_s == 1
     cccv_wait = next(
         step for step in sequence[0].routine.steps if isinstance(step, WaitStep)
     )
@@ -508,6 +513,30 @@ def test_workflow_contract_builds_all_stage_types(tmp_path) -> None:
     )
     with pytest.raises(NHRValidationError, match="cannot exceed 43200 s"):
         validate_workflow_profile(excessive_sequence, hardware=False)
+
+    with pytest.raises(NHRValidationError, match="finite number"):
+        validate_workflow_profile(
+            replace(
+                configuration,
+                workflow_limits=replace(
+                    configuration.workflow_limits,
+                    post_sequence_rest_s=-1,
+                ),
+            ),
+            hardware=False,
+        )
+
+    with pytest.raises(NHRValidationError, match="max_stage_duration_s"):
+        validate_workflow_profile(
+            replace(
+                configuration,
+                workflow_limits=replace(
+                    configuration.workflow_limits,
+                    post_sequence_rest_s=11,
+                ),
+            ),
+            hardware=False,
+        )
 
 
 def test_generic_workflow_examples_are_valid_but_unapproved() -> None:

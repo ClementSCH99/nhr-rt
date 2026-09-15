@@ -49,6 +49,8 @@ def test_service_and_64_bit_compatible_client(tmp_path) -> None:
         assert acquisition["sample_count"] >= 1
         assert acquisition["first_sample_at"] is not None
         assert acquisition["csv_path"].endswith(".csv")
+        assert Path(acquisition["csv_path"]).parent.name == "sim-1"
+        assert Path(acquisition["csv_path"]).parent.parent.name == "surveillance"
         assert acquisition["last_error"] is None
         assert client.measurement("sim-1")["instrument_id"] == "sim-1"
         disabled = client.command("sim-1", "disable")
@@ -97,6 +99,7 @@ def test_startup_summary_and_effective_configuration(tmp_path, capsys) -> None:
             "runtime_snapshot": "1.0",
         }
         assert "external_snapshot_publication" in configuration["capabilities"]
+        assert "controlled_service_shutdown" in configuration["capabilities"]
     finally:
         manager.close()
         server.server_close()
@@ -437,3 +440,36 @@ def test_manager_shutdown_disables_output_and_watchdog(tmp_path) -> None:
     assert backend.enabled is False
     assert backend.watchdog_enabled is False
     server.server_close()
+
+
+def test_controlled_service_shutdown_requires_ack_and_stops_server(tmp_path) -> None:
+    server, manager = build_server(
+        {
+            "output_dir": str(tmp_path),
+            "instruments": [{"id": "sim-api-shutdown", "backend": "simulator"}],
+        },
+        port=0,
+        announce=False,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        client.connect("sim-api-shutdown")
+        with pytest.raises(NHRAPIError) as rejected:
+            client.shutdown_service("wrong")
+        assert rejected.value.code == "policy_rejected"
+
+        accepted = client.shutdown_service("CONTROLLED_SERVICE_SHUTDOWN")
+        assert accepted == {
+            "shutdown_completed": True,
+            "safe_close_verified": True,
+            "scope": "all_instruments",
+        }
+        assert manager.get("sim-api-shutdown").instrument.connected is False
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+    finally:
+        manager.close()
+        server.server_close()

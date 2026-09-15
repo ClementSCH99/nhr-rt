@@ -80,16 +80,12 @@ function renderInterlocks(interlocks = [], external = []) {
       : rule.comparison === "minimum" ? `>= ${rule.minimum}`
       : rule.comparison === "maximum" ? `<= ${rule.maximum}`
       : rule.comparison === "equals" ? `= ${rule.expected}` : "";
-    let margin = null;
-    if (typeof value === "number" && Number.isFinite(value)) {
-      if (rule.comparison === "minimum") margin = value - rule.minimum;
-      if (rule.comparison === "maximum") margin = rule.maximum - value;
-      if (rule.comparison === "range") margin = Math.min(value - rule.minimum, rule.maximum - value);
-    }
-    detail.textContent = `${item.name || extra.rule_id || "Interlock"} · ${formatValue(value)} ${item.unit || extra.unit || ""}`
-      + (bound ? ` · rule ${bound}` : "")
-      + (margin == null ? "" : ` · margin ${numeric(margin)} ${item.unit || extra.unit || ""}`)
-      + ` · age ${numeric(age, 1)} s`
+    const operatorSupervision = item.name === "operator_supervision";
+    detail.textContent = operatorSupervision
+      ? `Operator supervision · declared ${item.safe ? "YES" : "NO"} · condition required = true · source configuration`
+      : `${item.name || extra.rule_id || "Interlock"} · value ${formatValue(value)} ${item.unit || extra.unit || ""}`
+      + (bound ? ` · condition ${bound}` : "")
+      + (age == null ? "" : ` · age ${numeric(age, 1)} s`)
       + (extra.latched ? ` · TRIGGER retained: ${formatValue(extra.value)} ${extra.unit || ""}` : "")
       + (current?.source_rejection ? " · source rejected" : "")
       + (current?.health && current.health !== "ok" ? ` · source ${current.health}` : "");

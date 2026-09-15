@@ -21,6 +21,7 @@
     "max_power_w": 250.0,
     "max_stage_duration_s": 90.0,
     "max_sequence_duration_s": 140.0,
+    "post_sequence_rest_s": 10.0,
     "approved": false,
     "profile_name": "UNAPPROVED sequence"
   },

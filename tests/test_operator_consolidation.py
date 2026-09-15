@@ -13,7 +13,12 @@ from pathlib import Path
 
 import pytest
 
-from nhr9300.operator import OperatorConsole, prepared_config, resolve_service_python
+from nhr9300.operator import (
+    OperatorConsole,
+    configured_instrument_ids,
+    prepared_config,
+    resolve_service_python,
+)
 from nhr9300.sinks import CsvMeasurementSink
 from nhr9300.external_interlocks import ExternalInterlockManager
 from test_external_interlocks import _rule, _now
@@ -95,6 +100,41 @@ def test_failed_close_never_advertises_finalized_evidence(service, monkeypatch):
     recovered = client.wait_workflow("sim-remote", second["run_id"], timeout_s=10)
     assert recovered["state"] == "passed"
     assert recovered["recording"]["finalized"]
+
+
+def test_failed_preflight_recording_close_blocks_preflight_without_sticking_sink(
+    service,
+    monkeypatch,
+):
+    _, config, _, client, _ = service
+    original = CsvMeasurementSink.close
+    failed_once = False
+
+    def fail_preflight(self):
+        nonlocal failed_once
+        original(self)
+        if self.path.name == "preflight.csv" and not failed_once:
+            failed_once = True
+            raise PermissionError("injected preflight close failure")
+
+    monkeypatch.setattr(CsvMeasurementSink, "close", fail_preflight)
+    digest = config["workflow_registry"][0]["expected_bundle_digest"]
+    failed = client.preflight_workflow(
+        "sim-remote",
+        "approved-rest-v1",
+        digest,
+    )
+    assert failed["passed"] is False
+    assert failed["recording"]["finalized"] is False
+    assert "injected preflight close failure" in failed["recording"]["error"]
+
+    passed = client.preflight_workflow(
+        "sim-remote",
+        "approved-rest-v1",
+        digest,
+    )
+    assert passed["passed"] is True
+    assert passed["recording"]["finalized"] is True
 
 
 def test_runtime_last_run_uses_persisted_chronology(service):
@@ -251,6 +291,21 @@ def test_hardware_service_python_rejects_wrong_runtime(tmp_path, monkeypatch):
         resolve_service_python(config, "nhr", str(python64))
 
 
+def test_operator_rejects_instrument_absent_from_configuration(service):
+    _, _, _, client, path = service
+    args = Namespace(
+        config=path,
+        instrument_id="not-configured",
+        service_url=client.base_url.removesuffix("/api/v1"),
+        service_python=sys.executable,
+        monitor_port=19400,
+    )
+
+    assert configured_instrument_ids(path) == ("sim-remote",)
+    with pytest.raises(ValueError, match="choose one of: sim-remote"):
+        OperatorConsole(args)
+
+
 def test_operator_menu_displays_one_action_per_line(service):
     operator = console(service)
     shown = []
@@ -270,6 +325,7 @@ def test_operator_menu_displays_one_action_per_line(service):
         "7 Status/evidence",
         "8 Stop test and finalize",
         "9 Recover request",
+        "10 Controlled shutdown NHR + runner-owned HMI",
         "Q Leave services running",
     ]
 
@@ -314,7 +370,13 @@ def test_launcher_starts_simulated_service_and_monitor_then_guided_stop(tmp_path
     args = Namespace(config=path, instrument_id="sim-remote",
                      service_url=f"http://127.0.0.1:{port}", service_python=sys.executable,
                      monitor_port=monitor_port)
-    replies = iter(["CONNECT", "PREFLIGHT", "SUPERVISED_WORKFLOW_READY"])
+    replies = iter([
+        "CONNECT",
+        "PREFLIGHT",
+        "SUPERVISED_WORKFLOW_READY",
+        "STOP",
+        "CONTROLLED_SERVICE_SHUTDOWN",
+    ])
     operator = OperatorConsole(args, ask=lambda _: next(replies), show=lambda _: None)
     operator.selected = "approved-rest-v1"
     children, opened = [], []
@@ -333,12 +395,23 @@ def test_launcher_starts_simulated_service_and_monitor_then_guided_stop(tmp_path
         assert opened == [f"http://127.0.0.1:{monitor_port}"]
         operator.preflight()
         operator.start()
-        operator.stop()
-        snapshot = operator.client.runtime("sim-remote")
-        run = snapshot["workflow"].get("last_run") or snapshot["workflow"]
+        run_id = json.loads(operator.journal.read_text(encoding="utf-8"))["run_id"]
+        operator.close_all()
+        run = json.loads(
+            (
+                tmp_path
+                / "runs"
+                / "workflow-runs"
+                / run_id
+                / "run-state.json"
+            ).read_text(encoding="utf-8")
+        )
         assert run["state"] == "stopped"
         assert run["recording"]["finalized"]
-        assert snapshot["acquisition"]["active"]
+        assert not operator.journal.exists()
+        assert all(child.poll() is not None for child in children)
+        assert not module.port_open("127.0.0.1", port)
+        assert not module.port_open("127.0.0.1", monitor_port)
     finally:
         # Only the two simulator/monitor children created by this test. No IVI.
         for child in children:

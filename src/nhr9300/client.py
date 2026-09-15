@@ -36,6 +36,7 @@ class WorkflowSummary(TypedDict, total=False):
     profile_name: str | None
     test_description: str | None
     stage_count: int
+    post_sequence_rest_s: float
 
 
 class WorkflowRunSnapshot(TypedDict, total=False):
@@ -171,6 +172,23 @@ class NHRServiceClient:
     def configuration(self) -> ServiceConfiguration:
         """Return resolved public service configuration and feature flags."""
         return self._request("GET", "/configuration")
+
+    def shutdown_service(
+        self,
+        operator_acknowledgement: str,
+    ) -> dict[str, Any]:
+        """Request controlled shutdown of the entire localhost service.
+
+        A successful response means service-owned cleanup completed. Callers
+        must still verify that the service port closes; transport loss alone
+        does not establish a physical safe state.
+        """
+        return self._request(
+            "POST",
+            "/service/shutdown",
+            {"operator_acknowledgement": operator_acknowledgement},
+            timeout_s=60.0,
+        )
 
     def connect(self, instrument_id: str) -> dict[str, Any]:
         """Ask the service to initialize its shared instrument runtime."""

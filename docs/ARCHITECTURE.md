@@ -137,6 +137,12 @@ workflow enables service-owned arm-lease renewal. Renewable stages remain
 capped at 8 hours and sequences at 12 hours. These are absolute ceilings, not
 recommended defaults.
 
+An approved workflow may request `post_sequence_rest_s`. The engine appends a
+named inactive rest only after every configured stage passes. This relaxation
+period remains inside the workflow duration ceiling and live safety monitoring,
+and becomes part of the sequence and canonical run evidence. It never delays a
+stop or failure path.
+
 ## Public service boundary
 
 The versioned API is `/api/v1`. Its endpoint families are:
@@ -146,6 +152,7 @@ The versioned API is `/api/v1`. Its endpoint families are:
 | Configuration, inventory, status, measurement, acquisition, runtime, events, interlocks | Read-only observation |
 | Workflow list, preflight, start, run status, run stop | Registered workflow authority |
 | External snapshot `PUT` | Decoded data publication only; no NHR command authority |
+| Controlled service shutdown | Local lifecycle control; exact acknowledgement required; closes every service-owned instrument |
 | Connect, detach, limits, arm, command and legacy routine | Compatibility path; physical writes disabled by default |
 
 `primitive_compatibility_control` is a local migration switch, not
@@ -155,7 +162,8 @@ no network authentication boundary; do not expose their ports to another host.
 ## Evidence model
 
 An active workflow can produce a surveillance acquisition CSV, a finalized
-session CSV, per-stage CSVs, `run-state.json`, `report.json` and
+`measurements/session.csv`, `measurements/sequence.csv`, per-stage CSVs,
+`run-state.json`, `report.json` and
 `artifacts.json`. The artifact manifest names file roles and hashes. The
 terminal report plus referenced finalized files are the durable NHR evidence;
 live SSE and a still-growing acquisition CSV are not.
@@ -175,6 +183,7 @@ the original CAN and NHR files.
 | Bounded SSE queues | A slow dashboard cannot block acquisition or safety | Display events may be dropped; clients must refresh the snapshot |
 | Simulator behind the same facade | Fast deterministic regression coverage of control logic | It cannot prove IVI timing, contactor behavior, wiring or electrical safety |
 | Dynamic zero without state change | Avoids relay cycling in signed profiles | 0 A/0 W is not isolation; a `rest` stage is required when isolation matters |
+| Explicit post-sequence rest | Captures DUT relaxation in sequence and merged evidence with output disabled | Extends workflow duration and requires CAN/interlock publication until finalization |
 
 ## Extension rules
 

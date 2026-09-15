@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 import subprocess
@@ -20,7 +21,12 @@ from nhr9300.workflow_registry import WorkflowBundle
 from nhr9300.workflow_runs import WORKFLOW_ACKNOWLEDGEMENT
 
 
-def _profile(path: Path, *, duration_s: float = 0.2) -> Path:
+def _profile(
+    path: Path,
+    *,
+    duration_s: float = 0.2,
+    post_sequence_rest_s: float = 0.0,
+) -> Path:
     data = {
         "test_description": "approved remote simulation",
         "bench_description": "simulated bench",
@@ -46,6 +52,7 @@ def _profile(path: Path, *, duration_s: float = 0.2) -> Path:
             "max_sequence_duration_s": 20,
             "approved": True,
             "profile_name": "approved-sim-workflow",
+            "post_sequence_rest_s": post_sequence_rest_s,
         },
         "stages": [
             {"name": "rest", "type": "rest", "duration_s": duration_s}
@@ -173,9 +180,20 @@ def test_approved_workflow_api_preflights_runs_and_is_idempotent(tmp_path) -> No
         )
         assert preflight["passed"] is True
         assert preflight["checks"]["final_safe_state_verified"] is True
+        assert preflight["recording"]["finalized"] is True
+        assert Path(preflight["recording"]["path"]).name == "preflight.csv"
+        assert Path(preflight["recording"]["path"]).parent.name == "measurements"
         preflight_report = json.loads(
             Path(preflight["report_path"]).read_text(encoding="utf-8")
         )
+        preflight_manifest = json.loads(
+            Path(preflight_report["artifact_manifest_path"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        assert "preflight_measurements" in {
+            item["role"] for item in preflight_manifest["artifacts"]
+        }
         assert preflight_report["simulator_initial_state"] == {
             "policy": "reset_from_profile",
             "configured_voltage_v": 90.0,
@@ -220,6 +238,12 @@ def test_approved_workflow_api_preflights_runs_and_is_idempotent(tmp_path) -> No
             "workflow_sequence",
             "workflow_stage",
         }
+        assert Path(report["sequence_result"]["global_csv_path"]).name == "sequence.csv"
+        assert Path(report["sequence_result"]["global_csv_path"]).parent.name == "measurements"
+        assert all(
+            Path(stage["csv_path"]).parent.name == "stages"
+            for stage in report["sequence_result"]["stages"]
+        )
         assert manager.get("sim-remote").collector.running is True
         profile.write_bytes(profile.read_bytes() + b"\n")
         after_drift = client.start_workflow(
@@ -229,6 +253,50 @@ def test_approved_workflow_api_preflights_runs_and_is_idempotent(tmp_path) -> No
             bundle_digest=digest,
         )
         assert after_drift["run_id"] == first["run_id"]
+    finally:
+        server.shutdown()
+        thread.join()
+        manager.close()
+        server.server_close()
+
+
+def test_post_sequence_rest_is_recorded_in_sequence_and_own_stage(tmp_path) -> None:
+    profile = _profile(
+        tmp_path / "workflow.json",
+        duration_s=0.1,
+        post_sequence_rest_s=0.3,
+    )
+    config = _config(tmp_path, profile)
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        run = client.start_workflow(
+            "sim-remote",
+            request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+        )
+        final = client.wait_workflow(
+            "sim-remote",
+            run["run_id"],
+            timeout_s=10,
+            poll_interval_s=0.05,
+        )
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        stages = report["sequence_result"]["stages"]
+        assert [stage["routine_id"] for stage in stages]
+        assert len(stages) == 2
+        assert report["sequence_result"]["stage_sample_counts"][1] >= 2
+        post_rest_path = Path(stages[1]["csv_path"])
+        assert post_rest_path.name == "02-post-sequence-rest.csv"
+        with post_rest_path.open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        assert rows
+        assert {row["state"] for row in rows}.isdisjoint({"charge", "discharge"})
+        assert final["recording"]["finalized"] is True
     finally:
         server.shutdown()
         thread.join()
@@ -438,7 +506,7 @@ def test_interrupted_manifest_blocks_start_until_preflight(tmp_path) -> None:
         assert recovered["state"] == "interrupted"
         assert recovered["final_safe_state"]["verified"] is False
         assert recovered["recording"]["path"] == str(
-            (prior_dir / "session.csv").resolve()
+            (prior_dir / "measurements" / "session.csv").resolve()
         )
         with pytest.raises(NHRError, match="successful preflight"):
             client.start_workflow(

@@ -28,8 +28,11 @@ const assert = require("node:assert/strict");
         recording: { state: "recording", path: "C:/runs/demo/session.csv" } },
       acquisition: { active: true, health: "ok", sample_count: 200, observed_rate_hz: 10,
         evidence_path: "C:/runs/surveillance.csv" },
-      interlocks: { results: [{ name: "cell-temperature", safe: true, fresh: true, value: 39,
-        unit: "degC", age_s: 0.1 }] },
+      interlocks: { results: [
+        { name: "cell-temperature", safe: true, fresh: true, value: 39,
+          unit: "degC", age_s: 0.1 },
+        { name: "operator_supervision", safe: true, fresh: true, age_s: 0 },
+      ] },
       external_sources: { status: "configured", results: [{ rule_id: "cell-temperature", value: 39,
         unit: "degC", rule: { comparison: "maximum", maximum: 40 }, latched: false,
         current: { value: 39, age_s: 0.1, health: "ok" } }] },
@@ -54,7 +57,11 @@ const assert = require("node:assert/strict");
           voltage_v: 94, current_a: i < 40 ? 2 : null, power_w: 188 - i });
       }
     });
-    assert.match(await page.locator("#interlock-list").innerText(), /margin 1.00/);
+    assert.match(await page.locator("#interlock-list").innerText(), /value 39.00 degC/);
+    assert.match(await page.locator("#interlock-list").innerText(), /condition <= 40/);
+    assert.match(await page.locator("#interlock-list").innerText(), /Operator supervision · declared YES · condition required = true · source configuration/);
+    assert.doesNotMatch(await page.locator("#interlock-list .interlock").nth(1).innerText(), /age/);
+    assert.doesNotMatch(await page.locator("#interlock-list").innerText(), /margin/);
     assert.match(await page.locator("#workflow-condition").innerText(), /2.00 <= 0.5 A/);
     await page.screenshot({ path: path.join(output, "running.png"), fullPage: true });
     snapshot.interlocks.results[0].safe = false;

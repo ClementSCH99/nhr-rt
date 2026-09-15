@@ -88,6 +88,9 @@ class WorkflowRunController:
     def _run_dir(self, run_id: str) -> Path:
         return self.output_dir / run_id
 
+    def _session_path(self, run_id: str) -> Path:
+        return self._run_dir(run_id) / "measurements" / "session.csv"
+
     def _manifest_path(self, run_id: str) -> Path:
         return self._run_dir(run_id) / "run-state.json"
 
@@ -114,10 +117,20 @@ class WorkflowRunController:
                     "verified": False,
                     "reason": "Service process ended before terminal persistence",
                 }
+                prior_recording = state.get("recording", {})
+                prior_path = (
+                    prior_recording.get("path")
+                    if isinstance(prior_recording, Mapping)
+                    else None
+                )
                 state["recording"] = {
                     "state": "interrupted",
                     "finalized": False,
-                    "path": str((path.parent / "session.csv").resolve()),
+                    "path": str(
+                        Path(prior_path).resolve()
+                        if prior_path
+                        else self._session_path(run_id).resolve()
+                    ),
                     "error": "Service ended before finalization",
                 }
                 self._recovery_required = True
@@ -170,31 +183,50 @@ class WorkflowRunController:
         target = self.output_dir.parent / "workflow-preflights" / preflight_id
         rules = entry.bundle.configuration.external_interlocks  # type: ignore[union-attr]
         self.external_interlocks.activate(rules, phase="pre_start")
+        recording_path = target / "measurements" / "preflight.csv"
+        recording_started = False
+        recording_close_error: Exception | None = None
         try:
             with self.operation_lock:
                 self.instrument.connect()
                 self.collector.start()
+                self.collector.start_session_recording(recording_path)
+                recording_started = True
                 profile = entry.bundle.materialize(target / "bundle")  # type: ignore[union-attr]
-                outcome = execute_workflow_on_runtime(
-                    profile=profile,
-                    output=target,
-                    run_id=preflight_id,
-                    instrument=self.instrument,
-                    collector=self.collector,
-                    hardware=self.hardware,
-                    preflight_only=True,
-                    reconnect_after_cleanup=self.reconnect_after_cleanup,
-                    workflow_id=workflow_id,
-                    bundle_digest=bundle_digest,
-                    simulator_initial_state_policy=self.simulator_initial_state_policy,
-                    external_interlock_evidence=self.external_interlocks.status,
-                )
+                try:
+                    outcome = execute_workflow_on_runtime(
+                        profile=profile,
+                        output=target,
+                        run_id=preflight_id,
+                        instrument=self.instrument,
+                        collector=self.collector,
+                        hardware=self.hardware,
+                        preflight_only=True,
+                        reconnect_after_cleanup=self.reconnect_after_cleanup,
+                        workflow_id=workflow_id,
+                        bundle_digest=bundle_digest,
+                        simulator_initial_state_policy=self.simulator_initial_state_policy,
+                        external_interlock_evidence=self.external_interlocks.status,
+                    )
+                finally:
+                    if recording_started:
+                        try:
+                            self.collector.finalize_session_recording()
+                        except Exception as exc:
+                            recording_close_error = exc
         finally:
             self.external_interlocks.deactivate()
             with self._state_lock:
                 self._preflight_active = False
                 self._preflight_done.set()
         report = json.loads(outcome.report_path.read_text(encoding="utf-8"))
+        recording = self._finalize_preflight_evidence(
+            target,
+            preflight_id,
+            report,
+            recording_path,
+            recording_close_error,
+        )
         with self._state_lock:
             self._recovery_required = not report.get(
                 "final_safe_state_verified", False
@@ -203,8 +235,9 @@ class WorkflowRunController:
             "preflight_id": preflight_id,
             "workflow_id": workflow_id,
             "bundle_digest": bundle_digest,
-            "passed": outcome.passed,
+            "passed": outcome.passed and recording["finalized"],
             "report_path": str(outcome.report_path),
+            "recording": recording,
             "checks": {
                 "identity": report.get("identity"),
                 "initial_status": report.get("initial_status"),
@@ -217,6 +250,68 @@ class WorkflowRunController:
             },
             "error": report.get("error") or report.get("cleanup_error"),
         }
+
+    def _finalize_preflight_evidence(
+        self,
+        target: Path,
+        preflight_id: str,
+        report: dict[str, Any],
+        recording_path: Path,
+        close_error: Exception | None,
+    ) -> dict[str, Any]:
+        """Label and hash the closed preflight recording in its own folder."""
+        try:
+            if close_error is not None:
+                raise close_error
+            recording_file = describe_file(
+                recording_path,
+                "preflight_measurements",
+            )
+            recording = {
+                "state": "finalized",
+                "finalized": True,
+                "path": str(recording_path.resolve()),
+                "file": recording_file,
+            }
+        except Exception as exc:
+            recording = {
+                "state": "failed",
+                "finalized": False,
+                "path": str(recording_path.resolve()),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            report["passed"] = False
+            report["outcome"] = "failed"
+            report["error"] = (
+                report.get("error")
+                or f"Preflight recording could not be finalized: {exc}"
+            )
+        report["recording"] = recording
+        atomic_write_json(target / "report.json", report)
+
+        manifest_path = target / "artifacts.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        artifacts = [
+            item
+            for item in manifest.get("artifacts", [])
+            if item.get("role") not in {"report", "preflight_measurements"}
+        ]
+        for item in (
+            describe_file(target / "report.json", "report"),
+            recording.get("file"),
+        ):
+            if item is None:
+                continue
+            artifacts.append(
+                {
+                    **item,
+                    "instrument_id": self.instrument.instrument_id,
+                    "run_id": preflight_id,
+                }
+            )
+        manifest["artifacts"] = artifacts
+        atomic_write_json(manifest_path, manifest)
+        return recording
 
     def start(
         self,
@@ -316,7 +411,7 @@ class WorkflowRunController:
                 "report_path": str((self._run_dir(run_id) / "report.json").resolve()),
                 "final_safe_state": {"verified": False},
                 "recording": {"state": "pending", "finalized": False,
-                              "path": str((self._run_dir(run_id) / "session.csv").resolve())},
+                              "path": str(self._session_path(run_id).resolve())},
                 "error": None,
                 "_counter_previous": {},
             }
@@ -342,11 +437,16 @@ class WorkflowRunController:
             self._persist(run_id)
 
     def _progress(self, run_id: str, entry: WorkflowRegistryEntry, index: int, stage: Any, step: str | None) -> None:
-        profile = entry.bundle.configuration.stages[index]  # type: ignore[union-attr]
+        configuration = entry.bundle.configuration  # type: ignore[union-attr]
+        profile = (
+            configuration.stages[index]
+            if index < len(configuration.stages)
+            else None
+        )
         termination = None
-        if profile.termination is not None:
+        if profile is not None and profile.termination is not None:
             termination = to_jsonable(profile.termination)
-        elif profile.type == "cccv":
+        elif profile is not None and profile.type == "cccv":
             termination = {
                 "field": "cutoff_current",
                 "operator": "<=",
@@ -379,10 +479,11 @@ class WorkflowRunController:
                 run["state"] = "running"
             run["stage"] = {
                 "index": index,
-                "count": len(entry.bundle.configuration.stages),  # type: ignore[union-attr]
+                "count": len(configuration.stages)
+                + int(configuration.workflow_limits.post_sequence_rest_s > 0.0),
                 "name": stage.name,
-                "type": profile.type,
-                "duration_s": profile.duration_s,
+                "type": stage.type,
+                "duration_s": stage.duration_s,
             }
             run["step"] = step
             kind = (step or "").partition("_")[2]
@@ -394,9 +495,9 @@ class WorkflowRunController:
                       "dynamic_profile": "Executing the time profile"}
             explanation = labels.get(kind, step or "Preparing stage")
             if kind == "wait":
-                if profile.type == "rest":
+                if stage.type == "rest":
                     explanation = "Rest: measuring until the reviewed duration ends"
-                elif profile.type == "cccv":
+                elif stage.type == "cccv":
                     explanation = "CCCV active: current cutoff applies after voltage activation; timeout remains enforced"
                 elif termination:
                     explanation = "Test active: waiting for the termination condition; timeout remains enforced"
@@ -431,9 +532,9 @@ class WorkflowRunController:
                 # otherwise stops a collector it had to start itself.
                 self.instrument.connect()
                 self.collector.start()
-                self.collector.start_session_recording(target / "session.csv")
+                self.collector.start_session_recording(self._session_path(run_id))
                 self._update(run_id, recording={"state": "recording", "finalized": False,
-                             "path": str((target / "session.csv").resolve())})
+                             "path": str(self._session_path(run_id).resolve())})
                 configuration = entry.bundle.configuration  # type: ignore[union-attr]
                 if configuration.workflow_limits.arm_lease_renewal_enabled:
                     supervisor = ArmLeaseSupervisor(
@@ -549,7 +650,7 @@ class WorkflowRunController:
         """
         target = self._run_dir(run_id)
         result: dict[str, Any] = {"state": "failed", "finalized": False,
-                                  "path": str((target / "session.csv").resolve())}
+                                  "path": str(self._session_path(run_id).resolve())}
         try:
             self.collector.finalize_session_recording()
             if not safe:
@@ -557,7 +658,7 @@ class WorkflowRunController:
             artifacts = json.loads((target / "artifacts.json").read_text(encoding="utf-8"))
             files = [describe_file(Path(item["path"]), item["role"])
                      for item in artifacts["artifacts"]]
-            files.append(describe_file(target / "session.csv", "session_measurements"))
+            files.append(describe_file(self._session_path(run_id), "session_measurements"))
             manifest = target / "session-evidence.json"
             result.update(state="finalized", finalized=True, files=files,
                           manifest_path=str(manifest.resolve()), finalized_at_utc=_utc_now())

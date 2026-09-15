@@ -27,6 +27,7 @@ from .monitor import require_local_service_url
 from .workflow_registry import WorkflowBundle
 
 ACK = "SUPERVISED_WORKFLOW_READY"
+SHUTDOWN_ACK = "CONTROLLED_SERVICE_SHUTDOWN"
 
 
 def _python_runtime(executable: Path) -> tuple[int, bool, bool]:
@@ -60,6 +61,24 @@ def _service_backend(config: Path, instrument_id: str) -> str:
     except StopIteration as exc:
         raise ValueError(f"Instrument {instrument_id!r} is absent from the configuration") from exc
     return str(instrument.get("backend", "ivi"))
+
+
+def configured_instrument_ids(config: Path) -> tuple[str, ...]:
+    """Return configured IDs and reject malformed or empty instrument lists."""
+    value = json.loads(config.read_text(encoding="utf-8"))
+    raw = value.get("instruments")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("Configuration must define at least one instrument")
+    identifiers = tuple(
+        str(item.get("id", "")).strip()
+        for item in raw
+        if isinstance(item, dict)
+    )
+    if len(identifiers) != len(raw) or any(not item for item in identifiers):
+        raise ValueError("Every configured instrument requires a non-empty id")
+    if len(set(identifiers)) != len(identifiers):
+        raise ValueError("Configured instrument IDs must be unique")
+    return identifiers
 
 
 def resolve_service_python(config: Path, instrument_id: str, requested: str | None) -> str:
@@ -157,11 +176,19 @@ class OperatorConsole:
     def __init__(self, args, *, ask=input, show=print) -> None:
         self.args, self.ask, self.show = args, ask, show
         self.config = args.config.resolve()
+        allowed = configured_instrument_ids(self.config)
+        if args.instrument_id not in allowed:
+            raise ValueError(
+                f"Instrument {args.instrument_id!r} is absent from the configuration; "
+                f"choose one of: {', '.join(allowed)}"
+            )
         self.client = NHRServiceClient(args.service_url)
         self.selected: str | None = None
         self.preflight_digest: str | None = None
         self.log_dir = self.config.parent / "operator-logs"
         self.journal = self.log_dir / f"request-{args.instrument_id}.json"
+        self.service_process: subprocess.Popen | None = None
+        self.monitor_process: subprocess.Popen | None = None
 
     def display(self, value) -> None:
         self.show(json.dumps(value, indent=2, ensure_ascii=False, default=str))
@@ -190,6 +217,7 @@ class OperatorConsole:
             log = self.log_dir / "service.log"
             process = launch_process([service_python, "-m", "nhr9300.service",
                                       "--config", str(self.config), "--host", host, "--port", str(port)], log)
+            self.service_process = process
             self.show(f"Started service PID {process.pid}; log: {log}")
             wait_ready(self.verify_service, process)
         self.launch_monitor()
@@ -214,6 +242,7 @@ class OperatorConsole:
             process = launch_process([sys.executable, "-m", "nhr9300.monitor", "--service-url",
                                       self.args.service_url, "--instrument-id", self.args.instrument_id,
                                       "--port", str(self.args.monitor_port)], log)
+            self.monitor_process = process
             self.show(f"Started monitor PID {process.pid}; log: {log}")
             wait_ready(probe, process)
         webbrowser.open(url)
@@ -330,10 +359,77 @@ class OperatorConsole:
             if pending.get("run_id") == result["run_id"]:
                 self.journal.unlink()
 
+    def close_all(self) -> None:
+        """Stop any run, then ask the service to release every owned resource."""
+        self.verify_service()
+        snapshot = self.client.runtime(self.args.instrument_id)
+        run = snapshot["workflow"]
+        if run.get("active"):
+            if self.ask(
+                "Stop the active workflow and wait for finalization? Type STOP: "
+            ) != "STOP":
+                self.show("Controlled shutdown cancelled; workflow and services remain active")
+                return
+            final = self.client.stop_and_wait_workflow(
+                self.args.instrument_id,
+                run["run_id"],
+                timeout_s=60,
+            )
+            self.display(final)
+            if self.journal.exists():
+                pending = json.loads(self.journal.read_text(encoding="utf-8"))
+                if pending.get("run_id") == final.get("run_id"):
+                    self.journal.unlink()
+            if not final.get("recording", {}).get("finalized"):
+                self.show("WARNING: workflow evidence did not finalize successfully")
+            if not final.get("final_safe_state", {}).get("verified"):
+                self.show("WARNING: workflow final safe state was not verified")
+
+        if self.ask(
+            "Shut down the complete NHR service and release all configured instruments? "
+            f"Type {SHUTDOWN_ACK}: "
+        ) != SHUTDOWN_ACK:
+            self.show("Controlled shutdown cancelled; services remain active")
+            return
+
+        result = self.client.shutdown_service(SHUTDOWN_ACK)
+        self.display(result)
+        if not (
+            result.get("shutdown_completed")
+            and result.get("safe_close_verified")
+        ):
+            raise RuntimeError(
+                "Service did not confirm verified controlled shutdown"
+            )
+        parsed = urlparse(self.args.service_url)
+        host, port = parsed.hostname, parsed.port or 9300
+        deadline = time.monotonic() + 30.0
+        while port_open(host, port) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if port_open(host, port):
+            raise RuntimeError(
+                "Service port remained open after controlled shutdown; inspect service.log"
+            )
+
+        if self.monitor_process is not None and self.monitor_process.poll() is None:
+            self.monitor_process.terminate()
+            self.monitor_process.wait(timeout=5)
+            self.show("Runner-owned HMI process stopped")
+        elif port_open("127.0.0.1", self.args.monitor_port):
+            self.show(
+                "The HMI was joined rather than started by this runner and remains open; "
+                "it no longer owns or controls NHR resources"
+            )
+        self.show(
+            "Controlled service shutdown completed; port closed and service-owned "
+            "instrument resources released"
+        )
+
     def run(self) -> int:
         actions = {"1": self.launch, "2": lambda: self.display(diagnose_config(self.config)),
                    "3": self.select, "4": self.prepare, "5": self.preflight,
-                   "6": self.start, "7": self.status, "8": self.stop, "9": self.recover}
+                   "6": self.start, "7": self.status, "8": self.stop, "9": self.recover,
+                   "10": self.close_all}
         while True:
             self.show(
                 f"\nSelected: {self.selected or '-'}\n"
@@ -346,6 +442,7 @@ class OperatorConsole:
                 "7 Status/evidence\n"
                 "8 Stop test and finalize\n"
                 "9 Recover request\n"
+                "10 Controlled shutdown NHR + runner-owned HMI\n"
                 "Q Leave services running"
             )
             try:
@@ -383,6 +480,15 @@ def main() -> int:
         parser.error("monitor port must be in 1..65535")
     if not args.instrument_id or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in args.instrument_id):
         parser.error("instrument ID must contain letters, digits, underscore or hyphen")
+    try:
+        allowed = configured_instrument_ids(args.config.resolve())
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        parser.error(f"invalid service configuration: {exc}")
+    if args.instrument_id not in allowed:
+        parser.error(
+            f"instrument {args.instrument_id!r} is absent from the configuration; "
+            f"choose one of: {', '.join(allowed)}"
+        )
     return OperatorConsole(args).run()
 
 

@@ -273,6 +273,7 @@ def execute_workflow_on_runtime(
                 progress_callback=progress_callback,
                 failure_handler=runtime_safety_failure,
                 arm_lease_supervisor=arm_lease_supervisor,
+                evidence_dir=output / "measurements",
             ).run(planned_stages)
             report["sequence_result"] = to_jsonable(sequence_result)
             if sequence_result.state == RoutineState.STOPPED and stop_event.is_set():
@@ -516,7 +517,11 @@ def execute_workflow(request: WorkflowRequest) -> WorkflowOutcome:
                     raise RuntimeError("Watchdog enable was not read back")
             if planned_stages is None:
                 raise RuntimeError("Sequence stages were not prepared")
-            sequence_result = SequenceRunner(instrument, collector).run(planned_stages)
+            sequence_result = SequenceRunner(
+                instrument,
+                collector,
+                evidence_dir=output / "measurements",
+            ).run(planned_stages)
             report["sequence_result"] = to_jsonable(sequence_result)
             if sequence_result.state != RoutineState.PASSED:
                 raise RuntimeError(sequence_result.reason)

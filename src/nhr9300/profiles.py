@@ -46,6 +46,7 @@ class WorkflowLimits:
     approved: bool
     profile_name: str
     arm_lease_renewal_enabled: bool = False
+    post_sequence_rest_s: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +167,20 @@ class WorkflowConfiguration:
                     stage.duration_s,
                 )
             )
+        if self.workflow_limits.post_sequence_rest_s > 0.0:
+            duration_s = self.workflow_limits.post_sequence_rest_s
+            built.append(
+                SequenceStage(
+                    "post-sequence-rest",
+                    rest_period(
+                        name="post-sequence-rest",
+                        duration_s=duration_s,
+                    ),
+                    None,
+                    "rest",
+                    duration_s,
+                )
+            )
         return tuple(built)
 
 
@@ -182,6 +197,22 @@ def _positive(value: Any, name: str) -> float:
         raise NHRValidationError(f"{name} must be a number greater than zero") from exc
     if converted <= 0.0:
         raise NHRValidationError(f"{name} must be greater than zero")
+    return converted
+
+
+def _non_negative(value: Any, name: str) -> float:
+    if isinstance(value, bool):
+        raise NHRValidationError(f"{name} must be a finite number greater than or equal to zero")
+    try:
+        converted = float(value)
+    except (TypeError, ValueError) as exc:
+        raise NHRValidationError(
+            f"{name} must be a finite number greater than or equal to zero"
+        ) from exc
+    if converted < 0.0 or not math.isfinite(converted):
+        raise NHRValidationError(
+            f"{name} must be a finite number greater than or equal to zero"
+        )
     return converted
 
 
@@ -297,6 +328,10 @@ def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware:
         workflow.arm_lease_renewal_enabled,
         "workflow_limits.arm_lease_renewal_enabled",
     )
+    post_sequence_rest_s = _non_negative(
+        workflow.post_sequence_rest_s,
+        "workflow_limits.post_sequence_rest_s",
+    )
     for value, name in (
         (workflow.max_current_a, "max_current_a"),
         (workflow.max_power_w, "max_power_w"),
@@ -390,7 +425,15 @@ def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware:
                     raise NHRValidationError(
                         f"External interlock {rule.rule_id!r} minimum exceeds maximum"
                     )
-    if sum(stage.duration_s for stage in configuration.stages) > workflow.max_sequence_duration_s:
+    if post_sequence_rest_s > workflow.max_stage_duration_s:
+        raise NHRValidationError(
+            "post_sequence_rest_s cannot exceed max_stage_duration_s"
+        )
+    if (
+        sum(stage.duration_s for stage in configuration.stages)
+        + post_sequence_rest_s
+        > workflow.max_sequence_duration_s
+    ):
         raise NHRValidationError("Sequence duration exceeds max_sequence_duration_s")
 
     names: set[str] = set()
@@ -563,6 +606,12 @@ def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware:
                     raise NHRValidationError("Voltage termination direction is inconsistent with mode")
                 if not limits.discharge_voltage_min <= condition.value <= limits.charge_voltage_max:
                     raise NHRValidationError("Voltage termination must remain inside safety limits")
+
+    if post_sequence_rest_s > 0.0 and "post-sequence-rest" in names:
+        raise NHRValidationError(
+            "Stage name 'post-sequence-rest' is reserved when "
+            "post_sequence_rest_s is enabled"
+        )
 
     if hardware:
         if not configuration.watchdog_enabled:

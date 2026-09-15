@@ -317,6 +317,7 @@ def _split_global_csv(
     results: Sequence[RoutineResult],
     *,
     snapshot: tuple[list[str], list[dict[str, str]]] | None = None,
+    evidence_dir: Path | None = None,
 ) -> tuple[str, list[int]]:
     path = Path(global_path)
     if snapshot is None:
@@ -330,9 +331,16 @@ def _split_global_csv(
         fieldnames, rows = snapshot
     routine_ids = {result.routine_id for result in results}
     sequence_rows = [row for row in rows if row["routine_id"] in routine_ids]
-    sequence_path = path.with_name(
-        f"{path.stem}__sequence_{results[0].routine_id[:8]}{path.suffix}"
-    )
+    if evidence_dir is None:
+        sequence_path = path.with_name(
+            f"{path.stem}__sequence_{results[0].routine_id[:8]}{path.suffix}"
+        )
+        stage_dir = sequence_path.parent
+    else:
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        sequence_path = evidence_dir / "sequence.csv"
+        stage_dir = evidence_dir / "stages"
+        stage_dir.mkdir(parents=True, exist_ok=True)
     with sequence_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -342,7 +350,11 @@ def _split_global_csv(
         stage_rows = [
             row for row in sequence_rows if row["routine_id"] == result.routine_id
         ]
-        stage_path = _stage_csv_path(sequence_path, index, stage.name)
+        if evidence_dir is None:
+            stage_path = _stage_csv_path(sequence_path, index, stage.name)
+        else:
+            safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", stage.name).strip("-.") or "stage"
+            stage_path = stage_dir / f"{index + 1:02d}-{safe_name}.csv"
         with stage_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
@@ -365,6 +377,7 @@ class SequenceRunner:
         progress_callback: Callable[[int, SequenceStage, str | None], None] | None = None,
         failure_handler: Callable[[Exception], bool] | None = None,
         arm_lease_supervisor=None,
+        evidence_dir: Path | None = None,
     ) -> None:
         self.instrument = instrument
         self.collector = collector
@@ -373,6 +386,7 @@ class SequenceRunner:
         self.progress_callback = progress_callback
         self.failure_handler = failure_handler
         self.arm_lease_supervisor = arm_lease_supervisor
+        self.evidence_dir = evidence_dir
 
     def run(self, stages: Sequence[SequenceStage]) -> SequenceResult:
         if not stages:
@@ -441,6 +455,7 @@ class SequenceRunner:
             executed_stages,
             result.stages,
             snapshot=self.collector.csv_snapshot(),
+            evidence_dir=self.evidence_dir,
         )
         for stage_result in result.stages:
             totals = _csv_directional_totals(stage_result.csv_path)

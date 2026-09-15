@@ -50,6 +50,7 @@ from .workflow_runs import WorkflowRunController
 
 LOGGER = logging.getLogger(__name__)
 MAX_JSON_BODY_BYTES = 256 * 1024
+SERVICE_SHUTDOWN_ACKNOWLEDGEMENT = "CONTROLLED_SERVICE_SHUTDOWN"
 SERVICE_CONTRACTS = {
     "error_response": "1.0",
     "external_snapshot": "1.0",
@@ -62,6 +63,7 @@ SERVICE_CAPABILITIES = [
     "external_snapshot_publication",
     "runtime_events",
     "runtime_snapshot",
+    "controlled_service_shutdown",
 ]
 
 
@@ -95,6 +97,7 @@ class EndpointClass(str, Enum):
     APPROVED_WORKFLOW_CONTROL = "approved_workflow_control"
     EXTERNAL_SNAPSHOT_CONTROL = "external_snapshot_control"
     PRIMITIVE_COMPATIBILITY_CONTROL = "primitive_compatibility_control"
+    SERVICE_LIFECYCLE_CONTROL = "service_lifecycle_control"
 
 
 READ_ONLY_ACTIONS = {
@@ -143,6 +146,8 @@ def classify_endpoint(method: str, action: str) -> EndpointClass:
         return EndpointClass.PRIMITIVE_COMPATIBILITY_CONTROL
     if normalized_method == "PUT" and action == "external-snapshot":
         return EndpointClass.EXTERNAL_SNAPSHOT_CONTROL
+    if normalized_method == "POST" and action == "service-shutdown":
+        return EndpointClass.SERVICE_LIFECYCLE_CONTROL
     if action in APPROVED_WORKFLOW_ACTIONS:
         return EndpointClass.APPROVED_WORKFLOW_CONTROL
     raise NHRValidationError(
@@ -365,7 +370,12 @@ class InstrumentManager:
             collector = AcquisitionCollector(
                 instrument,
                 rate_hz=float(item.get("rate_hz", 5.0)),
-                csv_path=output_dir / f"{instrument_id}.csv",
+                csv_path=(
+                    output_dir
+                    / "surveillance"
+                    / instrument_id
+                    / "acquisition.csv"
+                ),
             )
             self.instruments[instrument_id] = ManagedInstrument(
                 instrument,
@@ -767,6 +777,8 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
             return None, "inventory", None
         if len(parts) == 1 and parts[0] == "configuration":
             return None, "configuration", None
+        if versioned and parts == ["service", "shutdown"]:
+            return None, "service-shutdown", None
         if len(parts) == 2 and parts[0] == "instruments":
             return parts[1], "status", None
         if len(parts) == 3 and parts[0] == "instruments":
@@ -1007,6 +1019,37 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             instrument_id, action, run_id = self._route()
+            if action == "service-shutdown":
+                classify_endpoint("POST", action)
+                body = self._json_body()
+                self._require_body_fields(
+                    body,
+                    allowed={"operator_acknowledgement"},
+                    required={"operator_acknowledgement"},
+                )
+                if (
+                    body.get("operator_acknowledgement")
+                    != SERVICE_SHUTDOWN_ACKNOWLEDGEMENT
+                ):
+                    raise NHRPolicyError(
+                        "Controlled service shutdown requires explicit operator acknowledgement"
+                    )
+                LOGGER.info("Controlled service shutdown requested through localhost API")
+                self.manager.close()
+                self._send(
+                    HTTPStatus.OK,
+                    {
+                        "shutdown_completed": True,
+                        "safe_close_verified": True,
+                        "scope": "all_instruments",
+                    },
+                )
+                threading.Thread(
+                    target=self.server.shutdown,
+                    name="nhr9300-service-shutdown",
+                    daemon=True,
+                ).start()
+                return
             if instrument_id is None:
                 self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
                 return

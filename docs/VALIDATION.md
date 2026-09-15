@@ -256,6 +256,19 @@ physical final safe state. The subsequent evidence-recovery hardening is
 covered by repository regression tests but has not received a separate physical
 campaign.
 
+## Operator lifecycle and evidence organization — 2026-09-15
+
+Software/simulator regression coverage now includes early rejection of an
+instrument ID absent from the selected configuration, run/preflight CSV
+placement under labeled measurement directories, a canonical finalized
+`session.csv`, optional bounded post-sequence relaxation, and acknowledged
+localhost service shutdown. The HMI fixture verifies value/condition/age
+presentation without numeric margin while retaining latched trigger evidence.
+
+The controlled-shutdown tests exercise simulator process and API behavior only.
+They do not establish physical IVI shutdown timing, contactor state or DUT
+isolation; those remain supervised physical-validation responsibilities.
+
 ## Planned validation
 
 ### Milestone 6 — dynamic SoP envelope
