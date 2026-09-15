@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from nhr9300.operator import OperatorConsole, prepared_config
+from nhr9300.operator import OperatorConsole, prepared_config, resolve_service_python
 from nhr9300.sinks import CsvMeasurementSink
 from nhr9300.external_interlocks import ExternalInterlockManager
 from test_external_interlocks import _rule, _now
@@ -214,6 +214,64 @@ def test_launch_joins_only_matching_service(service, monkeypatch):
     with pytest.raises(ValueError, match="another config"):
         operator.launch()
     assert calls == ["monitor"]
+
+
+def test_hardware_service_python_auto_detects_sibling_venv32(tmp_path, monkeypatch):
+    import nhr9300.operator as module
+
+    config = tmp_path / "approved" / "service.json"
+    config.parent.mkdir()
+    config.write_text(json.dumps({"instruments": [{"id": "nhr", "backend": "ivi"}]}))
+    python64 = tmp_path / ".venv64" / "Scripts" / "python.exe"
+    python32 = tmp_path / ".venv32" / "Scripts" / "python.exe"
+    python64.parent.mkdir(parents=True)
+    python32.parent.mkdir(parents=True)
+    python64.touch()
+    python32.touch()
+    monkeypatch.setattr(module.sys, "executable", str(python64))
+    monkeypatch.setattr(
+        module,
+        "_python_runtime",
+        lambda candidate: (32, True, True) if candidate == python32 else (64, False, True),
+    )
+
+    assert resolve_service_python(config, "nhr", None) == str(python32)
+
+
+def test_hardware_service_python_rejects_wrong_runtime(tmp_path, monkeypatch):
+    import nhr9300.operator as module
+
+    config = tmp_path / "service.json"
+    config.write_text(json.dumps({"instruments": [{"id": "nhr", "backend": "ivi"}]}))
+    python64 = tmp_path / "python.exe"
+    python64.touch()
+    monkeypatch.setattr(module, "_python_runtime", lambda _: (64, False, True))
+
+    with pytest.raises(ValueError, match="32-bit NHR service runtime with comtypes"):
+        resolve_service_python(config, "nhr", str(python64))
+
+
+def test_operator_menu_displays_one_action_per_line(service):
+    operator = console(service)
+    shown = []
+    operator.show = shown.append
+    operator.ask = lambda _: "q"
+    operator.status = lambda: {}
+
+    assert operator.run() == 0
+    menu = shown[0].splitlines()
+    assert menu[2:] == [
+        "1 Launch/join NHR + HMI",
+        "2 Diagnostic",
+        "3 Select workflow",
+        "4 Prepare digest",
+        "5 Preflight",
+        "6 Start",
+        "7 Status/evidence",
+        "8 Stop test and finalize",
+        "9 Recover request",
+        "Q Leave services running",
+    ]
 
 
 def test_template_library_remains_unapproved():

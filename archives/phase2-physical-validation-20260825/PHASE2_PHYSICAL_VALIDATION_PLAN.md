@@ -943,7 +943,7 @@ The final summary must contain:
 
 When validation begins in a new task:
 
-1. open this document and `docs/SAFETY.md`;
+1. open this document and `docs/ARCHITECTURE.md` (current safety contract);
 2. inspect current branch/commit and configuration without modifying them;
 3. begin at T0 and do not assume a prior test passed without its record;
 4. state the current authorization tier and what remains unauthorized;
@@ -1045,10 +1045,7 @@ workflows and real misunderstandings rather than an idealized procedure.
 ## 14. Reference contracts
 
 - [Repository overview](../../README.md)
-- [Safety model](../../docs/SAFETY.md)
-- [Service authority](../../docs/SERVICE_AUTHORITY.md)
-- [Workflow registry and lifecycle](../../docs/WORKFLOWS.md)
-- [Runtime observability](../../docs/RUNTIME_OBSERVABILITY.md)
-- [Read-only monitor](../../docs/MONITOR.md)
+- [Architecture, safety and service authority](../../docs/ARCHITECTURE.md)
+- [Workflow, client and monitor operation](../../docs/HOW_TO_OPERATE_NHR_RT.md)
 - [Existing validation record](../../docs/VALIDATION.md)
-- [Expansion roadmap](../../ROADMAP.md)
+- [Future validation plan](../../docs/VALIDATION.md#planned-validation)

@@ -29,6 +29,71 @@ from .workflow_registry import WorkflowBundle
 ACK = "SUPERVISED_WORKFLOW_READY"
 
 
+def _python_runtime(executable: Path) -> tuple[int, bool, bool]:
+    """Inspect a candidate service interpreter without importing IVI-COM."""
+    probe = (
+        "import importlib.util, struct; "
+        "print(struct.calcsize('P') * 8, "
+        "int(importlib.util.find_spec('comtypes') is not None), "
+        "int(importlib.util.find_spec('nhr9300') is not None))"
+    )
+    try:
+        result = subprocess.run(
+            [str(executable), "-c", probe],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=5,
+        )
+        bitness, comtypes_available, package_available = result.stdout.strip().split()
+        return int(bitness), comtypes_available == "1", package_available == "1"
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return 0, False, False
+
+
+def _service_backend(config: Path, instrument_id: str) -> str:
+    value = json.loads(config.read_text(encoding="utf-8"))
+    try:
+        instrument = next(
+            item for item in value.get("instruments", []) if item.get("id") == instrument_id
+        )
+    except StopIteration as exc:
+        raise ValueError(f"Instrument {instrument_id!r} is absent from the configuration") from exc
+    return str(instrument.get("backend", "ivi"))
+
+
+def resolve_service_python(config: Path, instrument_id: str, requested: str | None) -> str:
+    """Choose a valid service interpreter before a physical connection is attempted."""
+    backend = _service_backend(config, instrument_id)
+    if backend != "ivi":
+        return requested or sys.executable
+
+    if requested:
+        candidates = [Path(requested)]
+    else:
+        current = Path(sys.executable)
+        candidates = [current]
+        if current.parent.name.lower() == "scripts":
+            candidates.append(current.parent.parent.parent / ".venv32" / "Scripts" / "python.exe")
+        for parent in (config.parent, *config.parents):
+            candidates.append(parent / ".venv32" / "Scripts" / "python.exe")
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate in seen or not candidate.is_file():
+            continue
+        seen.add(candidate)
+        if _python_runtime(candidate) == (32, True, True):
+            return str(candidate)
+
+    detail = f"Configured --service-python {requested!r} is not" if requested else "No interpreter is"
+    raise ValueError(
+        f"{detail} a usable 32-bit NHR service runtime with comtypes and nhr9300. "
+        "Install .[ivi] in .venv32 or pass --service-python .\\.venv32\\Scripts\\python.exe"
+    )
+
+
 def prepared_config(path: Path, workflow_id: str) -> tuple[dict, WorkflowBundle]:
     """Validate approvals/identity before calculating a replacement digest."""
     config = json.loads(path.read_text(encoding="utf-8"))
@@ -118,8 +183,12 @@ class OperatorConsole:
         else:
             if self.ask("Start service and connect configured instruments? Type CONNECT: ") != "CONNECT":
                 return
+            service_python = resolve_service_python(
+                self.config, self.args.instrument_id, self.args.service_python
+            )
+            self.show(f"Service interpreter: {service_python}")
             log = self.log_dir / "service.log"
-            process = launch_process([self.args.service_python, "-m", "nhr9300.service",
+            process = launch_process([service_python, "-m", "nhr9300.service",
                                       "--config", str(self.config), "--host", host, "--port", str(port)], log)
             self.show(f"Started service PID {process.pid}; log: {log}")
             wait_ready(self.verify_service, process)
@@ -266,9 +335,19 @@ class OperatorConsole:
                    "3": self.select, "4": self.prepare, "5": self.preflight,
                    "6": self.start, "7": self.status, "8": self.stop, "9": self.recover}
         while True:
-            self.show(f"\nSelected: {self.selected or '-'}\n1 Launch/join NHR + HMI | 2 Diagnostic | 3 Select workflow\n"
-                      "4 Prepare digest | 5 Preflight | 6 Start | 7 Status/evidence\n"
-                      "8 Stop test and finalize | 9 Recover request | Q Leave services running")
+            self.show(
+                f"\nSelected: {self.selected or '-'}\n"
+                "1 Launch/join NHR + HMI\n"
+                "2 Diagnostic\n"
+                "3 Select workflow\n"
+                "4 Prepare digest\n"
+                "5 Preflight\n"
+                "6 Start\n"
+                "7 Status/evidence\n"
+                "8 Stop test and finalize\n"
+                "9 Recover request\n"
+                "Q Leave services running"
+            )
             try:
                 choice = self.ask("> ").strip().lower()
                 if choice == "q":
@@ -292,8 +371,11 @@ def main() -> int:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--instrument-id", required=True)
     parser.add_argument("--service-url", default="http://127.0.0.1:9300")
-    parser.add_argument("--service-python", default=sys.executable,
-                        help="32-bit Python with nhr9300 installed for IVI; current interpreter for simulation")
+    parser.add_argument(
+        "--service-python",
+        help=("32-bit Python with comtypes and nhr9300 installed for IVI; "
+              "auto-detect .venv32 when omitted, current interpreter for simulation"),
+    )
     parser.add_argument("--monitor-port", type=int, default=9400)
     args = parser.parse_args()
     require_local_service_url(args.service_url)

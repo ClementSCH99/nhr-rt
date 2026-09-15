@@ -23,6 +23,16 @@ Never interpret a client exception, closed console, HTTP timeout or SSE EOF as
 proof that physical output is off. Confirm terminal run evidence and the final
 safe-state readback.
 
+Use the guide by task:
+
+- first simulation: sections 3-6;
+- service configuration and Python client: sections 6-17;
+- monitor and physical preparation: sections 18-24;
+- guided operator console: section 25;
+- CAN/BMS external snapshots: section 26;
+- finalized evidence and downstream merge: section 27;
+- troubleshooting: section 21.
+
 ## 1. Mental model
 
 ```text
@@ -130,6 +140,9 @@ Every CLI exposes its current options through `-h`:
 .\.venv32\Scripts\nhr9300-run.exe -h
 .\.venv32\Scripts\nhr9300-service.exe -h
 .\.venv64\Scripts\nhr9300-monitor.exe -h
+.\.venv64\Scripts\nhr9300-operator.exe -h
+nhr9300-doctor -h
+nhr9300-bundle -h
 ```
 
 Two commands inspect without connecting an instrument:
@@ -1123,8 +1136,8 @@ snapshot for every required source and wait any approved stability duration.
 An unsafe, rejected, missing or stale required value fails closed. During a
 workflow it requests controlled stop and remains latched until workflow end.
 Inspect `client.interlocks()`, the terminal run and `report.json`; do not infer
-safe state from a recovered CAN value or SSE EOF. See
-[External fail-closed interlocks](EXTERNAL_INTERLOCKS.md).
+safe state from a recovered CAN value or SSE EOF. The complete publication and
+rule contract is consolidated in section 26 below.
 
 ## 22. Safe exception handling pattern
 
@@ -1212,37 +1225,198 @@ When reporting a problem, capture:
 
 Never include secrets or unrelated proprietary data in a support bundle.
 
-## 25. Current known limitations
+## 25. Use the guided operator console
+
+The console joins the service, monitor, workflow selection, preflight and
+recovery into one menu. It does not send a command on entry and cannot approve
+a profile or authorize a physical run.
+
+```powershell
+nhr9300-operator `
+  --config .\service.hardware.local.json `
+  --instrument-id YOUR_ID `
+  --service-python .\.venv32\Scripts\python.exe
+```
+
+For simulation, use the repository exercise:
+
+```powershell
+.\.venv64\Scripts\nhr9300-operator.exe `
+  --config .\examples\operator-simulation\service.json `
+  --instrument-id sim-operator
+```
+
+Typical sequence:
+
+1. select a locally registered workflow;
+2. prepare and review the exact digest change before typing `APPLY`;
+3. launch or join the service (`CONNECT` is required before a new service can
+   connect configured instruments);
+4. run preflight and inspect every result;
+5. start only after the separate run authorization, using the required
+   acknowledgement;
+6. observe status, request cooperative stop when needed, and wait for terminal
+   finalization;
+7. recover the request journal before starting another run.
+
+The console never restarts a shared service automatically. `Q`, EOF and Ctrl+C
+detach only the console: the service, monitor and any workflow remain alive.
+Logs and the uncertain-start journal are stored in `operator-logs` beside the
+configuration. Do not delete an unresolved journal; recovery reuses the same
+request UUID so a lost start response cannot silently create a duplicate.
+
+## 26. Publish CAN/BMS external snapshots
+
+At startup, verify capabilities rather than inferring them from the package
+version:
+
+```python
+from nhr9300 import NHRServiceClient
+
+client = NHRServiceClient("http://127.0.0.1:9300")
+configuration = client.configuration()
+assert configuration["contracts"]["external_snapshot"] == "1.0"
+assert "external_snapshot_publication" in configuration["capabilities"]
+```
+
+Publish from a dedicated bounded forwarding worker, never from the CAN receive
+thread. The public helper owns sequence and retry state for one source:
+
+```python
+from nhr9300 import ExternalSnapshotPublisher, NHRTransportError
+
+publisher = ExternalSnapshotPublisher(
+    client, "nhr-reviewed-id", "bms-main", timeout_s=0.5
+)
+
+try:
+    publisher.publish(
+        timestamp_utc=decoded_sample.timestamp_utc,
+        health="ok",
+        signals={
+            "pack_voltage_v": decoded_sample.pack_voltage_v,
+            "max_cell_temperature_c": decoded_sample.max_cell_temperature_c,
+            "hv_permissive": decoded_sample.hv_permissive,
+        },
+    )
+except NHRTransportError:
+    # Retry this exact pending payload before accepting a newer sequence.
+    publisher.retry_pending()
+```
+
+Use one publisher and one forwarding worker per `source_id`. The source ID is
+1-64 letters, digits, dots, underscores or hyphens. A snapshot contains exactly
+`sequence`, UTC `timestamp_utc`, `health` and a complete `signals` object.
+Values are finite JSON numbers or booleans. Use the oldest contributing source
+timestamp when one snapshot combines messages. Set `health="ok"` only when
+required messages are current, decoding is valid and the complete signal set is
+available. The service bounds accidental publisher growth to 32 tracked
+sources, 256 signals per snapshot and 262144 bytes per JSON request; these are
+resource guards, not authentication.
+
+Sequence numbers strictly increase. A lost response requires an idempotent
+retry of the exact same sequence and payload. Reusing a sequence with different
+data, publishing out of order, invalid values, unhealthy state or a timestamp
+more than one second in the future fails the source closed. A publisher restart
+reads `client.interlocks(instrument_id)` and resumes above the last accepted
+sequence.
+
+Rules are reviewed inside the workflow JSON and therefore covered by the bundle
+digest:
+
+```json
+"external_interlocks": [
+  {
+    "rule_id": "pack_voltage_window",
+    "source_id": "bms-main",
+    "signal": "pack_voltage_v",
+    "comparison": "range",
+    "minimum": 72.0,
+    "maximum": 100.8,
+    "unit": "V",
+    "applies": "both",
+    "max_age_s": 0.5,
+    "stability_duration_s": 0.2
+  },
+  {
+    "rule_id": "bms_hv_permissive",
+    "source_id": "bms-main",
+    "signal": "hv_permissive",
+    "comparison": "equals",
+    "expected": true,
+    "unit": "boolean",
+    "applies": "both",
+    "max_age_s": 0.5
+  }
+]
+```
+
+Comparisons are inclusive and may be `minimum`, `maximum`, `range` or boolean
+`equals`. `applies` is `pre_start`, `runtime` or `both`. Stability delays only
+the assertion of a safe permissive; an unsafe runtime value is not debounced.
+Runtime violations latch until the workflow ends.
+
+Integration lifecycle:
+
+1. start CAN capture/decoding and the forwarding worker;
+2. publish a complete snapshot and confirm `interlocks()`;
+3. preflight/start the registered workflow and retain `run_id`;
+4. keep publication active while observing `runtime()` or events;
+5. on intentional shutdown, stop and wait for a terminal NHR run before ending
+   publication and CAN capture.
+
+API failures expose stable `NHRAPIError.code` values. Branch on the code, not
+the human-readable message: `policy_rejected`, `interlock_unsafe`,
+`state_conflict`, `invalid_request`, `request_failed` or `internal_error`.
+Dynamic SoP power limiting is not implemented; an external SoP value must not
+be interpreted as an applied NHR power limit.
+
+## 27. Consume finalized evidence
+
+Four lifetimes are independent: the workflow, continuous service surveillance,
+run-scoped recording, and the service process. Consequently,
+`runtime.acquisition.evidence_path` is a live surveillance CSV that can keep
+growing or rotate after a workflow. It is not the file for a final merge.
+
+The run API returns a `recording` object. A consumer must require a terminal
+workflow state and `recording.finalized == true`. `finalized` is asserted only
+after CSV closure, final safe-state verification, hashing and atomic manifest
+persistence. The nonterminal `finalizing` state is evidence work, not another
+energizing step.
+
+Each manifest file has `role`, absolute `path`, `size_bytes` and `sha256`. Use
+the `session_measurements` role for the run CSV; do not guess by filename.
+Finalized does not mean passed: a controlled stop or failed test may have
+complete evidence. Conversely, a passed sequence may have a recording failure.
+
+CAN-PY or another consumer should:
+
+1. retain the NHR `run_id` with its own provenance;
+2. poll the exact run to terminal and require finalized recording;
+3. read the manifest and verify instrument/run identity, size and SHA-256;
+4. check UTC coverage, overlap and clock assumptions;
+5. create a separate derived merge and preserve every source if the merge
+   fails, is empty or has no overlap.
+
+On service crash, an unfinished run is recovered as `interrupted` with
+unfinalized evidence. Files remain diagnostic input; no automatic repair or
+merge is implied.
+
+## 28. Current known limitations and references
 
 - The simulator supports only `reset_from_profile`; intentional state
-  preservation between workflows is not yet supported.
+  preservation between workflows is not supported.
 - Windows/OneDrive locking is retried for a bounded interval, but persistent
-  locks still fail closed; prefer a verified local evidence path.
-- `disconnect()` is a compatibility detach despite its name.
-- Workflow stop requires polling after `stop_requested`.
-- SSE is a live bounded stream and can contain gaps; it is not the audit record.
-- General service-acquisition rotations are not all attached to a workflow
-  manifest because they can span several workflow lifecycles.
+  locks fail closed; prefer a verified local evidence path.
+- `disconnect()` is a deprecated compatibility detach, not service shutdown.
+- Workflow stop is asynchronous; wait after `stop_requested`.
+- SSE is bounded live observability and can contain gaps; it is not the audit
+  record.
 - Primitive compatibility control is a migration flag, not access control.
-- The localhost service has no network authentication boundary.
+- The localhost service and monitor have no network authentication boundary.
+- Dynamic SoP limiting remains future work.
 
-See [Operator learning findings and improvement backlog](OPERATOR_LEARNING_FINDINGS.md)
-for proposed product corrections and acceptance criteria.
-
-## 26. Reference documentation
-
-- [Architecture](ARCHITECTURE.md)
-- [Safety](SAFETY.md)
-- [Service authority contract](SERVICE_AUTHORITY.md)
-- [64-bit client integration](CLIENT_INTEGRATION.md)
-- [Workflow profiles](WORKFLOWS.md)
-- [Runtime observability](RUNTIME_OBSERVABILITY.md)
-- [Monitor](MONITOR.md)
-- [Validation record](VALIDATION.md)
-
-
-## Guided runner and session finalization (September 2026)
-
-For the simplified two-terminal workflow, use [OPERATOR_RUNNER.md](OPERATOR_RUNNER.md).
-The [session evidence contract](SESSION_EVIDENCE.md) distinguishes closed run files
-from the live service acquisition CSV described above.
+Use [Architecture and design](ARCHITECTURE.md) for ownership and rationale,
+[Validation status and plan](VALIDATION.md) for evidence boundaries and future
+work, and the colocated `README.md` files under `examples/` for example-specific
+instructions.

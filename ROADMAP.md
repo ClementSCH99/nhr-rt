@@ -10,9 +10,10 @@
 
 ## Operator consolidation before M6
 
-The accepted [operator improvement plan](docs/OPERATOR_IMPROVEMENT_PLAN.md)
+The accepted [operator consolidation](docs/VALIDATION.md#operator-consolidation--2026-09-14)
 adds run-owned finalized evidence, a guided CLI, read-only HMI improvements and
-an unapproved example catalogue. See the [runner guide](docs/OPERATOR_RUNNER.md).
+an unapproved example catalogue. See the
+[guided operator procedure](docs/HOW_TO_OPERATE_NHR_RT.md#25-use-the-guided-operator-console).
 This work is limited to NHR-RT; CAN-PY automatic finalization/merge remains a
 separate integration dependency. M1-M5 software is implemented; physical
 acceptance remains limited to the documented configurations/campaigns below.
@@ -23,8 +24,8 @@ validation. Operator acceptance and physical qualification are separate gates.
 
 Milestones 1–4 and their Expansion Phase 2 validation campaign are complete for
 the exact reviewed configurations. Operator consolidation and its acceptance
-exercise now precede M6. The separate
-[operator proficiency exercise track](docs/OPERATOR_PROFICIENCY_EXERCISES.md)
+exercise now precede M6. The
+[software-only operator exercise](examples/operator-simulation/README.md)
 remains available; neither track extends physical authority or replaces the
 Milestone 5–7 gates below.
 

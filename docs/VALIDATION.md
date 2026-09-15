@@ -1,5 +1,32 @@
 # Validation record
 
+This is the single living index for validation status, future validation and
+historical evidence. A result applies only to the exact software revision,
+instrument, DUT, profile and conditions named by its evidence. `PASS` in one
+row never authorizes another physical run.
+
+## Current status
+
+| Capability | Software / simulator | Physical evidence | Status / next gap |
+|---|---|---|---|
+| Typed facade, acquisition, workflow engine and evidence | Complete regression coverage; latest operator-consolidation baseline was 180 passed, 2 hardware tests skipped | Sessions 2-5 and 2026-08-19 refactor acceptance on NHR 79503 | Accepted within archived scope |
+| Service authority and registered remote workflows | Milestones 1-4 plus operator runner covered in separate 32/64-bit processes | Phase 2 Tiers P/N/E on NHR 79503 | Accepted within exact archived configurations |
+| Read-only runtime, SSE and monitor | Snapshot, queue-gap, reconnect, UI/error/stale-state and no-write coverage | Observed during Phase 2 campaign | Accepted as read-only; not a safety heartbeat |
+| Finalized per-run recording | Normal, stop, failure, write failure, detached observer and repeated-run coverage | No dedicated new physical campaign after delivery | Software accepted; physical evidence workflow to be exercised on next approved run |
+| External fail-closed interlocks | Snapshot validation, freshness, latching, controlled stop and fallback covered | No real CAN/BMS or sensor-chain validation | Software accepted; physical integration open |
+| CAN-PY public integration | 64-bit publisher, retry/idempotence, capability discovery and lifecycle contract covered | No real CAN traffic or combined physical evidence | Boundary ready; end-to-end integration open |
+| Dynamic SoP envelope | Not implemented | Not tested | Planned Milestone 6 |
+| v0.3.0 integrated release | Partial inputs above | Not qualified as a complete release | Planned Milestone 7 |
+
+The two routinely skipped tests are hardware-gated. A software suite reported
+as green means they stayed skipped unless a specific physical record states
+otherwise.
+
+The current checkout was revalidated after this documentation consolidation on
+2026-09-14: **181 passed, 2 skipped** in the 32-bit project environment. Only
+documentation changed, so this confirms regression stability; it adds no new
+physical evidence.
+
 The current implementation has passed software, simulator and supervised NHR
 tests for read-only acquisition, safety primitives, watchdog loss, CC, CCCV,
 constant power, rest, ordered sequences and signed dynamic profiles.
@@ -21,7 +48,8 @@ disconnect completed successfully.
 - Dynamic zero without contactor cycling and direct charge/discharge transition.
 - Cleanup and independent reconnect with output/watchdog disabled.
 
-The active-zero residual documented in `SAFETY.md` is a known hardware behavior,
+The active-zero residual documented in [the architecture safety
+invariants](ARCHITECTURE.md#safety-invariants) is a known hardware behavior,
 not a precise electrical zero guarantee.
 
 ## Final refactor acceptance — 2026-08-19
@@ -177,8 +205,8 @@ cadence, units, sensor wiring or placement, reviewed battery thresholds,
 physical NHR controlled-stop time, emergency fallback time, or final physical
 safe state. No hardware command, energization, commit or push was performed.
 
-The exact snapshot/rule contract and operator boundaries are documented in
-[EXTERNAL_INTERLOCKS.md](EXTERNAL_INTERLOCKS.md).
+The exact snapshot/rule contract and operator boundaries are consolidated in
+the external-snapshot section of [the operating guide](HOW_TO_OPERATE_NHR_RT.md).
 
 ## CAN-PY integration readiness — 2026-09-10
 
@@ -205,3 +233,96 @@ This validates the NHR-RT integration boundary, not real CAN traffic, DBC or
 signal identity, sensor timestamps/units, production cadence, physical stop
 timing, dynamic SoP or safe state on hardware. Those remain separate CAN-PY,
 M6 and supervised physical-validation responsibilities.
+
+## Operator consolidation — 2026-09-14
+
+The finalized-session recording, guided operator console, monitor improvements
+and non-approved example catalogue were validated without physical hardware.
+The complete 32-bit suite passed 180 tests with two hardware tests skipped.
+Compilation and whitespace checks passed, and the entry point was exercised
+from 64-bit Python.
+
+The integrated simulator path covered service and monitor process launch,
+preflight, start, guided stop, session finalization and continued surveillance.
+Tests also covered finalization after normal completion, repeated stop, failure,
+write failure, detached observers, second runs, bundle drift, port conflicts,
+wrong-service attachment and recovery of an uncertain start with the same
+idempotence key. Visual fixtures covered missing, constant and interrupted
+trends, a latched interlock, finalization and service loss.
+
+This did not validate operator usability on the actual bench, emergency-stop or
+inhibit contacts, IVI behavior, a physical profile, CAN-PY merge behavior or a
+physical final safe state. The subsequent evidence-recovery hardening is
+covered by repository regression tests but has not received a separate physical
+campaign.
+
+## Planned validation
+
+### Milestone 6 — dynamic SoP envelope
+
+The intended contract is that fresh external charge/discharge capability may
+only reduce the effective power ceiling. The applied ceiling is the minimum of
+the approved workflow ceiling, NHR safety limit and fresh external SoP value.
+It never rewrites or increases approved NHR safety limits.
+
+Implementation is not authorized by this plan. Before coding, freeze the
+contract and architecture. Software acceptance must demonstrate:
+
+- rising, falling, missing, invalid and stale SoP in the simulator;
+- applied setpoints never exceeding workflow, hardware or external ceilings;
+- CC, CCCV, CP and dynamic-profile compatibility without relay/state cycling;
+- unchanged legacy regulation behavior;
+- controlled stop and durable evidence when required SoP becomes unavailable;
+- source, requested, approved and applied power values for material changes.
+
+Physical status remains `NOT TESTED`. It requires separately reviewed signals,
+units, timestamps, cadence, thresholds, profiles, stop timing and immediate
+per-run authorization.
+
+### Milestone 7 — integrated validation and v0.3.0
+
+Software and simulator scope:
+
+1. registry, bundle digest, double gates and primitive-write rejection;
+2. run idempotence, exclusivity, stop, restart and evidence recovery;
+3. external value, timestamp, sequence, freshness, latching and rule behavior;
+4. SoP clamping and regulation-mode compatibility;
+5. SSE lifecycle, bounded queues, EOF/reconnect and monitor visual QA;
+6. separate 32-bit service and 64-bit client/monitor integration;
+7. complete regression suite with environmental cleanup errors reported apart
+   from functional failures.
+
+Proposed supervised physical sequence, subject to a new approved protocol:
+
+1. remote preflight without energizing;
+2. short reviewed workflow from the 64-bit client;
+3. unsafe isolation permissive blocking start;
+4. reviewed voltage or temperature trip requesting controlled stop;
+5. measurable SoP reduction below approved static limits;
+6. heartbeat loss and bounded emergency fallback;
+7. simultaneous read-only monitoring without interference;
+8. cleanup and independent reconnect confirming output/watchdog off and every
+   channel/setpoint disabled or zeroed.
+
+The physical evidence package must retain exact revisions, configurations,
+profiles and digests, external snapshots, event chronology, reports, finalized
+CSV/manifests, operator observations, deviations and independent final-state
+proof. Temperature cannot be accepted until signal identity, aggregation,
+units, timestamps, sensor placement and wiring are verified.
+
+Release requires architectural review, explicit approval of every profile,
+threshold and timing value, software and supervised evidence, operator
+acceptance, archive review, and separate authorization to commit, tag, push and
+publish.
+
+## Evidence retention rules
+
+- Keep `docs/VALIDATION.md` as the status/index; do not paste full run logs here.
+- Put immutable campaign narratives and closeouts under `archives/<campaign>/`.
+- Publish large raw ZIP evidence as a release asset and record its SHA-256 in
+  [the archive index](../archives/README.md).
+- Retain exact revision, test ID, setup, profile/digest, result, deviations,
+  limitations and final safe-state evidence for every physical disposition.
+- Preserve failed evidence when it explains a corrected limit, timeout or
+  procedure. Remove transient duplicates only after the retained record is
+  independently sufficient.
