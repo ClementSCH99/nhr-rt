@@ -28,6 +28,7 @@ nhr9300-monitor = "nhr9300.monitor:main"
 nhr9300-operator = "nhr9300.operator:main"
 nhr9300-doctor = "nhr9300.diagnostics:doctor_main"
 nhr9300-bundle = "nhr9300.diagnostics:bundle_main"
+nhr9300-capabilities = "nhr9300.diagnostics:capabilities_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

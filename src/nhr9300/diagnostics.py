@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
+from .backends.ivi import DEFAULT_DRIVER_DLL, IVIBackend
+from .capability_manifest import capture_capability_manifest
 from .evidence import check_output_directory
+from .instrument import NHR9300
+from .interlocks import StaticInterlockProvider
 from .workflow_registry import WorkflowBundle, WorkflowRegistry
 
 
@@ -85,6 +89,46 @@ def doctor_main() -> int:
     parser.add_argument("--config", required=True, type=Path)
     args = parser.parse_args()
     print(json.dumps(diagnose_config(args.config), indent=2))
+    return 0
+
+
+def capabilities_main() -> int:
+    """Capture one identity-bound capability manifest without energizing output."""
+    parser = argparse.ArgumentParser(
+        description="Read an idle physical NHR once and write a capability manifest"
+    )
+    parser.add_argument("--instrument-id", required=True)
+    parser.add_argument("--resource", required=True)
+    parser.add_argument("--expected-serial-number", required=True)
+    parser.add_argument("--max-current-a", required=True, type=float)
+    parser.add_argument("--max-voltage-v", required=True, type=float)
+    parser.add_argument("--max-power-w", required=True, type=float)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--driver-dll", type=Path, default=DEFAULT_DRIVER_DLL)
+    args = parser.parse_args()
+    if args.output.exists():
+        parser.error(f"refusing to overwrite existing manifest: {args.output}")
+
+    instrument = NHR9300(
+        args.instrument_id,
+        IVIBackend(args.instrument_id, args.resource, args.driver_dll),
+        interlocks=[StaticInterlockProvider(safe=False)],
+    )
+    try:
+        with instrument:
+            manifest = capture_capability_manifest(
+                instrument,
+                instrument_id=args.instrument_id,
+                resource_name=args.resource,
+                expected_serial_number=args.expected_serial_number,
+                max_current_a=args.max_current_a,
+                max_voltage_v=args.max_voltage_v,
+                max_power_w=args.max_power_w,
+            )
+        manifest.write(args.output)
+    except Exception as exc:
+        parser.exit(2, f"Capability capture failed: {exc}\n")
+    print(json.dumps(manifest.to_dict(), indent=2))
     return 0
 
 

@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 from .acquisition import AcquisitionCollector
 from .backends.ivi import DEFAULT_DRIVER_DLL, IVIBackend
 from .backends.simulator import SimulatedBackend
+from .capability_manifest import CapabilityManifest
 from .errors import (
     NHRError,
     NHRInterlockError,
@@ -362,10 +363,29 @@ class InstrumentManager:
                 safe=bool(item.get("operator_supervised", backend_name == "simulator"))
             )
             external_interlocks = ExternalInterlockManager()
+            capability_manifest = None
+            raw_manifest_path = item.get("capability_manifest")
+            if raw_manifest_path is not None:
+                if backend_name != "ivi":
+                    raise NHRValidationError(
+                        "capability_manifest is supported only for IVI instruments"
+                    )
+                manifest_path = Path(str(raw_manifest_path))
+                if not manifest_path.is_absolute():
+                    base_dir = (
+                        config_path.parent if config_path is not None else Path.cwd()
+                    )
+                    manifest_path = base_dir / manifest_path
+                capability_manifest = CapabilityManifest.load(manifest_path.resolve())
+                capability_manifest.verify_binding(
+                    instrument_id=instrument_id,
+                    resource_name=str(item["logical_name"]),
+                )
             instrument = NHR9300(
                 instrument_id,
                 backend,
                 interlocks=[interlock, external_interlocks],
+                capability_manifest=capability_manifest,
             )
             collector = AcquisitionCollector(
                 instrument,

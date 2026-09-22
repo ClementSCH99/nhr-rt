@@ -14,6 +14,7 @@ from .client import (
     WorkflowRunSnapshot,
     WorkflowSummary,
 )
+from .capability_manifest import CapabilityManifest, capture_capability_manifest
 from .errors import (
     NHRAPIError,
     NHREvidencePersistenceError,
@@ -98,6 +99,8 @@ __all__ = [
     "SafetyLimitsReadback",
     "Setpoints",
     "ServiceConfiguration",
+    "CapabilityManifest",
+    "capture_capability_manifest",
     "SimulatedBackend",
     "StaticInterlockProvider",
     "StageProfile",

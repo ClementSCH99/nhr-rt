@@ -37,8 +37,8 @@ class SimulatedBackend:
         self.capabilities = capabilities or Capabilities(
             voltage_min=0.0,
             voltage_max=1000.0,
-            charge_current_max=200.0,
-            discharge_current_max=200.0,
+            charge_current_max=333.0,
+            discharge_current_max=333.0,
             charge_power_max=100_000.0,
             discharge_power_max=100_000.0,
             current_slew_rate_min=0.1,

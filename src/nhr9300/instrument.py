@@ -10,6 +10,7 @@ from dataclasses import replace
 from typing import Any, Callable, Sequence, TypeVar
 
 from .backends.base import NHRBackend
+from .capability_manifest import CapabilityManifest
 from .errors import (
     NHRConnectionError,
     NHRInterlockError,
@@ -47,18 +48,21 @@ class NHR9300:
         interlocks: Sequence[InterlockProvider],
         interlock_max_age_s: float = 2.0,
         measurement_max_age_s: float = 2.0,
+        capability_manifest: CapabilityManifest | None = None,
     ) -> None:
         self.instrument_id = instrument_id
         self._backend = backend
         self._interlocks = list(interlocks)
         self._interlock_max_age_s = interlock_max_age_s
         self._measurement_max_age_s = measurement_max_age_s
+        self._capability_manifest = capability_manifest
         self._requests: queue.Queue[
             tuple[Callable[..., Any] | None, tuple[Any, ...], Future[Any]]
         ] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._connected = False
         self._capabilities: Capabilities | None = None
+        self._identity: Identity | None = None
         self._limits: SafetyLimits | None = None
         self._armed_until: float | None = None
         self._last_measurement: Measurement | None = None
@@ -165,7 +169,21 @@ class NHR9300:
             self._call(self._backend.connect)
             self._connected = True
             try:
-                self._capabilities = self._call(self._backend.read_capabilities)
+                if self._capability_manifest is None:
+                    self._capabilities = self._call(self._backend.read_capabilities)
+                else:
+                    self._identity = self._call(self._backend.read_identity)
+                    resource_name = str(
+                        getattr(self._backend, "resource_name", self.instrument_id)
+                    )
+                    self._capability_manifest.verify_binding(
+                        instrument_id=self.instrument_id,
+                        resource_name=resource_name,
+                        identity=self._identity,
+                    )
+                    self._capabilities = (
+                        self._capability_manifest.effective_capabilities
+                    )
                 observed = self._call(self._backend.read_status)
                 self._last_status = observed
                 self._may_be_energized = observed.enabled and observed.state in (
@@ -217,7 +235,11 @@ class NHR9300:
 
     def read_identity(self) -> Identity:
         self._require_connected()
-        return self._call(self._backend.read_identity)
+        if self._capability_manifest is None:
+            return self._call(self._backend.read_identity)
+        if self._identity is None:
+            self._identity = self._call(self._backend.read_identity)
+        return self._identity
 
     def read_capabilities(self) -> Capabilities:
         self._require_connected()

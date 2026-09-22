@@ -156,6 +156,42 @@ nhr9300-bundle digest .\path\workflow.json
 `nhr9300-doctor` does write/replace/delete a small diagnostic file below the
 configured `output_dir`; it performs no backend connection or control action.
 
+### Capture physical capabilities once
+
+For a stable physical setup, capture the NHR capabilities once while the output
+is disabled. The command only connects, reads status/identity/capabilities, and
+closes; it never arms or enables the output. It refuses an offline instrument,
+an identity mismatch, an energized state, an envelope above the observed
+hardware values, or an existing destination file.
+
+```powershell
+.\.venv32\Scripts\nhr9300-capabilities.exe `
+  --instrument-id nhr-79503 `
+  --resource "DC PM 1" `
+  --expected-serial-number 79503 `
+  --max-current-a 333 `
+  --max-voltage-v 330 `
+  --max-power-w 100000 `
+  --output .\approved\capabilities\nhr-79503.json
+```
+
+Reference that identity-bound manifest from the IVI instrument entry:
+
+```json
+{
+  "id": "nhr-79503",
+  "backend": "ivi",
+  "logical_name": "DC PM 1",
+  "capability_manifest": "capabilities/nhr-79503.json"
+}
+```
+
+The service then uses the reviewed envelope from the manifest instead of
+querying capabilities again. It still verifies the connected logical name,
+serial number, and part number on every new service connection. Hardware
+capability does not replace DUT safety limits: every workflow profile must
+remain independently approved and may be more restrictive.
+
 Use the installed executable from the intended virtual environment. This avoids
 accidentally running a global or wrong-bitness installation.
 
