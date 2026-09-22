@@ -234,8 +234,11 @@ def load_workflow_profile(path: str | Path) -> WorkflowConfiguration:
     unknown_root = set(root) - allowed_root
     if unknown_root:
         raise NHRValidationError(f"Unknown workflow profile fields: {sorted(unknown_root)}")
-    limits = SafetyLimits(**_mapping(root.get("safety_limits"), "safety_limits"))
-    workflow = WorkflowLimits(**_mapping(root.get("workflow_limits"), "workflow_limits"))
+    try:
+        limits = SafetyLimits(**_mapping(root.get("safety_limits"), "safety_limits"))
+        workflow = WorkflowLimits(**_mapping(root.get("workflow_limits"), "workflow_limits"))
+    except TypeError as exc:
+        raise NHRValidationError(f"Invalid workflow limits: {exc}") from exc
     raw_stages = root.get("stages")
     if not isinstance(raw_stages, list):
         raise NHRValidationError("stages must be an array")

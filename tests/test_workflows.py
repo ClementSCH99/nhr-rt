@@ -429,6 +429,11 @@ def test_workflow_contract_builds_all_stage_types(tmp_path) -> None:
     assert cccv_wait.activation_condition == Condition("voltage", ">=", 95.0)
     assert cccv_wait.activation_tolerance == pytest.approx(1e-6)
 
+    data["workflow_limits"]["max_voltage_v"] = 100
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(NHRValidationError, match="Invalid workflow limits.*max_voltage_v"):
+        load_workflow_profile(path)
+
     bad = replace(configuration, workflow_limits=replace(configuration.workflow_limits, max_current_a=1))
     with pytest.raises(NHRValidationError, match="workflow limits"):
         validate_workflow_profile(bad, hardware=False)

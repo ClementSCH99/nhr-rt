@@ -17,7 +17,7 @@ import nhr9300.workflow_runs as workflow_runs_module
 from nhr9300.client import NHRServiceClient
 from nhr9300.errors import NHRError, NHRPolicyError
 from nhr9300.service import build_server
-from nhr9300.workflow_registry import WorkflowBundle
+from nhr9300.workflow_registry import WorkflowBundle, WorkflowRegistry
 from nhr9300.workflow_runs import WORKFLOW_ACKNOWLEDGEMENT
 
 
@@ -123,6 +123,24 @@ def test_bundle_detects_bytes_changed_after_startup(tmp_path) -> None:
 
     with pytest.raises(NHRPolicyError, match="changed after service startup"):
         bundle.verify_unchanged()
+
+
+def test_invalid_workflow_limits_do_not_abort_registry_startup(tmp_path) -> None:
+    profile = _profile(tmp_path / "workflow.json")
+    config = _config(tmp_path, profile)
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    data["workflow_limits"]["max_voltage_v"] = 100
+    profile.write_text(json.dumps(data), encoding="utf-8")
+
+    registry = WorkflowRegistry.from_config(
+        config,
+        base_dir=tmp_path,
+        instrument_backends={"sim-remote": "simulator"},
+    )
+
+    entry = registry.list_for("sim-remote")[0]
+    assert entry["available"] is False
+    assert entry["error"].startswith("NHRValidationError: Invalid workflow limits")
 
 
 def test_bundle_digest_covers_referenced_dynamic_csv_bytes(tmp_path) -> None:
