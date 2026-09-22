@@ -23,6 +23,7 @@ from nhr9300.sequences import (
 from nhr9300.errors import NHRValidationError
 from nhr9300.routines import (
     Condition,
+    ExternalTerminationCondition,
     RoutineContext,
     RoutineRunner,
     WaitStep,
@@ -30,6 +31,8 @@ from nhr9300.routines import (
     constant_power_hold,
     rest_period,
 )
+from nhr9300.external_interlocks import ExternalInterlockManager, ExternalInterlockRule
+from datetime import datetime, timezone
 from nhr9300.profiles import load_workflow_profile, validate_workflow_profile
 from nhr9300.types import Measurement, RoutineResult, RoutineState
 from nhr9300 import cli, execution
@@ -57,6 +60,120 @@ def setup(tmp_path, name="workflow", initial_voltage_v=90.0):
     instrument.connect()
     collector = AcquisitionCollector(instrument, rate_hz=10, csv_path=tmp_path / "measurements.csv")
     return instrument, collector
+
+
+def test_external_termination_passes_stage_and_records_following_rest(tmp_path) -> None:
+    interlocks = ExternalInterlockManager()
+    interlocks.activate(
+        [ExternalInterlockRule(
+            rule_id="cell_critical", source_id="bms", signal="MinCellVolt",
+            comparison="minimum", minimum=2.65, unit="V", applies="both",
+            max_age_s=2.0,
+        )],
+        phase="runtime",
+        latch_runtime=True,
+    )
+    interlocks.submit("bms", {
+        "sequence": 1, "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "health": "ok", "signals": {"MinCellVolt": 2.74},
+    })
+    instrument = NHR9300(
+        "termination-test", SimulatedBackend("termination-test", initial_voltage_v=90.0),
+        interlocks=[StaticInterlockProvider(), interlocks],
+    )
+    instrument.connect()
+    collector = AcquisitionCollector(instrument, rate_hz=10, csv_path=tmp_path / "measurements.csv")
+    condition = ExternalTerminationCondition("bms", "MinCellVolt", "<=", 2.75, 2.0, "V")
+    stages = (
+        SequenceStage("discharge", constant_current_hold(
+            name="discharge", limits=limits(), mode=OperatingState.DISCHARGE,
+            current_a=2.0, voltage_v=82.0, power_w=200.0, duration_s=1.0,
+            termination_conditions=(Condition("voltage", "<=", 80.0), condition),
+        )),
+        SequenceStage("relaxation", rest_period(name="relaxation", duration_s=0.3)),
+    )
+    try:
+        result = SequenceRunner(
+            instrument, collector,
+            external_signal_reader=interlocks.read_termination_signal,
+        ).run(stages)
+        status = instrument.read_status()
+    finally:
+        instrument.close()
+    assert result.state == RoutineState.PASSED
+    assert [stage.state for stage in result.stages] == [RoutineState.PASSED] * 2
+    assert result.stages[0].termination_field == "MinCellVolt"
+    assert result.stages[0].termination_detail["index"] == 1
+    assert result.stages[0].termination_detail["trigger"]["source_sequence"] == 1
+    assert result.stage_sample_counts[1] > 0
+    assert status.enabled is False
+
+
+def test_extreme_interlock_preempts_normal_termination(tmp_path) -> None:
+    interlocks = ExternalInterlockManager()
+    interlocks.activate([ExternalInterlockRule(
+        rule_id="cell_critical", source_id="bms", signal="MinCellVolt",
+        comparison="minimum", minimum=2.65, unit="V", applies="both", max_age_s=2.0,
+    )], phase="runtime", latch_runtime=True)
+    interlocks.submit("bms", {
+        "sequence": 1, "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "health": "ok", "signals": {"MinCellVolt": 2.64},
+    })
+    instrument = NHR9300(
+        "critical-test", SimulatedBackend("critical-test", initial_voltage_v=90.0),
+        interlocks=[StaticInterlockProvider(), interlocks],
+    )
+    instrument.connect()
+    collector = AcquisitionCollector(instrument, rate_hz=10, csv_path=tmp_path / "measurements.csv")
+    condition = ExternalTerminationCondition("bms", "MinCellVolt", "<=", 2.75, 2.0, "V")
+    try:
+        result = SequenceRunner(
+            instrument, collector,
+            external_signal_reader=interlocks.read_termination_signal,
+        ).run((SequenceStage("discharge", constant_current_hold(
+            name="discharge", limits=limits(), mode=OperatingState.DISCHARGE,
+            current_a=2.0, voltage_v=82.0, power_w=200.0, duration_s=1.0,
+            termination_conditions=(condition,),
+        )),))
+    finally:
+        instrument.close()
+    assert result.state == RoutineState.FAILED
+    assert result.stages[0].termination_reason is None
+
+
+def test_profile_validates_multiple_terminations_guard_and_rest_warning(tmp_path) -> None:
+    template = json.loads(Path("examples/workflows/cc.example.json").read_text(encoding="utf-8"))
+    template["safety_limits"]["approved"] = True
+    template["workflow_limits"]["approved"] = True
+    stage = template["stages"][0]
+    stage["mode"] = "discharge"
+    stage["voltage_v"] = 82.0
+    stage.pop("termination")
+    stage["termination_conditions"] = [
+        {"field": "capacity_ah", "operator": ">=", "value": 1.0, "relative": True},
+        {"type": "external", "source_id": "bms", "signal": "MinCellVolt",
+         "operator": "<=", "value": 2.75, "max_age_s": 2.0, "unit": "V"},
+    ]
+    template["external_interlocks"] = [{
+        "rule_id": "cell_critical", "source_id": "bms", "signal": "MinCellVolt",
+        "comparison": "minimum", "minimum": 2.65, "unit": "V", "applies": "both",
+        "max_age_s": 2.0,
+    }]
+    profile = tmp_path / "workflow.json"
+    profile.write_text(json.dumps(template), encoding="utf-8")
+    configuration = load_workflow_profile(profile)
+    validate_workflow_profile(configuration, hardware=False)
+    assert len(configuration.stages[0].termination_conditions) == 2
+    assert configuration.warnings()
+    template["workflow_limits"]["post_sequence_rest_s"] = 5.0
+    profile.write_text(json.dumps(template), encoding="utf-8")
+    configuration = load_workflow_profile(profile)
+    validate_workflow_profile(configuration, hardware=False)
+    assert configuration.warnings() == []
+    template["external_interlocks"][0]["minimum"] = 2.75
+    profile.write_text(json.dumps(template), encoding="utf-8")
+    with pytest.raises(NHRValidationError, match="more extreme"):
+        validate_workflow_profile(load_workflow_profile(profile), hardware=False)
 
 
 @pytest.mark.parametrize("mode,initial,voltage", [

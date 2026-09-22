@@ -18,6 +18,7 @@ from .evidence import atomic_write_json
 from .instrument import NHR9300
 from .interlocks import StaticInterlockProvider
 from .profiles import load_workflow_profile, validate_workflow_profile
+from .routines import ExternalTerminationCondition
 from .qualification import (
     require_disabled_inactive,
     require_safe_start,
@@ -149,6 +150,7 @@ def execute_workflow_on_runtime(
     external_interlock_evidence: Callable[[], Mapping[str, Any]] | None = None,
     runtime_safety_failure: Callable[[Exception], bool] | None = None,
     arm_lease_supervisor: ArmLeaseSupervisor | None = None,
+    external_signal_reader: Callable[[Any], tuple[float, dict[str, Any]]] | None = None,
 ) -> WorkflowOutcome:
     """Execute an approved workflow on a service-owned runtime.
 
@@ -163,6 +165,12 @@ def execute_workflow_on_runtime(
             raise ValueError(
                 "External interlock workflows require the service-owned snapshot runtime"
             )
+        if any(
+            isinstance(condition, ExternalTerminationCondition)
+            for stage in configuration.stages
+            for condition in stage.termination_conditions
+        ) and external_signal_reader is None:
+            raise ValueError("External termination requires the service snapshot runtime")
         dynamic_profile_files = _dynamic_profile_evidence(configuration)
         planned_stages = (
             None
@@ -190,6 +198,7 @@ def execute_workflow_on_runtime(
         "profile_sha256": hashlib.sha256(profile_bytes).hexdigest(),
         "dynamic_profile_files": dynamic_profile_files,
         "configuration": to_jsonable(configuration),
+        "warnings": configuration.warnings(),
         "started_at_utc": datetime.now(timezone.utc),
         "passed": False,
     }
@@ -274,6 +283,7 @@ def execute_workflow_on_runtime(
                 failure_handler=runtime_safety_failure,
                 arm_lease_supervisor=arm_lease_supervisor,
                 evidence_dir=output / "measurements",
+                external_signal_reader=external_signal_reader,
             ).run(planned_stages)
             report["sequence_result"] = to_jsonable(sequence_result)
             if sequence_result.state == RoutineState.STOPPED and stop_event.is_set():

@@ -14,6 +14,7 @@ row never authorizes another physical run.
 | Read-only runtime, SSE and monitor | Snapshot, queue-gap, reconnect, UI/error/stale-state and no-write coverage | Observed during Phase 2 campaign | Accepted as read-only; not a safety heartbeat |
 | Finalized per-run recording | Normal, stop, failure, write failure, detached observer and repeated-run coverage | No dedicated new physical campaign after delivery | Software accepted; physical evidence workflow to be exercised on next approved run |
 | External fail-closed interlocks | Snapshot validation, freshness, latching, controlled stop and fallback covered | No real CAN/BMS or sensor-chain validation | Software accepted; physical integration open |
+| Multiple normal stage terminations | Ordered NHR/BMS conditions, critical-interlock precedence, measured rest and finalized service evidence covered in simulation | No physical threshold or sensor-chain validation | Software accepted; physical profile review open |
 | CAN-PY public integration | 64-bit publisher, retry/idempotence, capability discovery and lifecycle contract covered | No real CAN traffic or combined physical evidence | Boundary ready; end-to-end integration open |
 | Dynamic SoP envelope | Not implemented | Not tested | Planned Milestone 6 |
 | v0.3.0 integrated release | Partial inputs above | Not qualified as a complete release | Planned Milestone 7 |
@@ -22,10 +23,9 @@ The two routinely skipped tests are hardware-gated. A software suite reported
 as green means they stayed skipped unless a specific physical record states
 otherwise.
 
-The current checkout was revalidated after this documentation consolidation on
-2026-09-14: **181 passed, 2 skipped** in the 32-bit project environment. Only
-documentation changed, so this confirms regression stability; it adds no new
-physical evidence.
+The 2026-09-14 documentation consolidation was revalidated with **181 passed,
+2 skipped** in the 32-bit project environment. It added no new physical
+evidence.
 
 The current implementation has passed software, simulator and supervised NHR
 tests for read-only acquisition, safety primitives, watchdog loss, CC, CCCV,
@@ -268,6 +268,24 @@ presentation without numeric margin while retaining latched trigger evidence.
 The controlled-shutdown tests exercise simulator process and API behavior only.
 They do not establish physical IVI shutdown timing, contactor state or DUT
 isolation; those remain supervised physical-validation responsibilities.
+
+## Normal stage termination versus critical interlock — 2026-09-22
+
+Software and simulator tests cover an ordered list of stage termination
+conditions, including NHR capacity and fresh BMS voltage or temperature.
+They verify that the first met condition is recorded with its exact external
+snapshot provenance, that a passing stage continues into a measured rest, and
+that an extreme interlock takes precedence over normal termination. A
+service-level test covers preflight, a normal BMS-triggered stage end, rest and
+finalized run recording. Profile validation requires a strictly more extreme
+runtime interlock on the same source, signal and unit for every external
+termination. These tests do not qualify example thresholds, CAN decoding,
+physical response time or a DUT-specific profile.
+
+The complete 32-bit software suite on 2026-09-22 passed with **198 passed,
+2 hardware-gated skips**. All eight unapproved workflow examples passed JSON
+parsing and profile-schema validation with approval flags overridden in memory
+only; no example was approved or physically executed.
 
 ## Planned validation
 

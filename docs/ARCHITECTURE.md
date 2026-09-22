@@ -114,6 +114,16 @@ start rejects the run. A runtime violation latches its triggering metadata,
 requests controlled stop and uses the separately approved emergency fallback
 only if the reviewed deadline is missed.
 
+An active stage may also have an ordered list of normal termination conditions
+using NHR measurements or fresh BMS signals. The workflow engine checks safety
+interlocks first. The first reached condition ends only that stage with a
+recorded reason; the routine returns to standby, disables output and proceeds
+to the next stage. A following rest keeps acquisition and interlock monitoring
+active while stage termination conditions are not evaluated. An external termination
+requires a runtime interlock on the same source, signal and unit with a
+strictly more extreme threshold. Missing, unhealthy or stale data cannot be
+reported as a normal stage completion.
+
 ## Safety invariants
 
 - Hardware workflows require an approved exact bundle, resource and serial,

@@ -17,6 +17,7 @@ from .errors import NHRRoutineError, NHRValidationError
 from .instrument import NHR9300
 from .routines import (
     Condition,
+    ExternalTerminationCondition,
     ConfigureLimitsStep,
     DisableStep,
     Routine,
@@ -80,6 +81,7 @@ class DynamicProfileStep(Step):
     current_limit_enabled: bool = True
     power_limit_enabled: bool = True
     termination: Condition | None = None
+    termination_conditions: tuple[Condition | ExternalTerminationCondition, ...] = ()
     poll_interval_s: float = 0.1
     arm_lease_s: float = 300.0
     name = "dynamic_profile"
@@ -120,6 +122,7 @@ class DynamicProfileStep(Step):
         baseline: float | None = None
         accumulated = 0.0
         previous_actual: float | None = None
+        conditions = self.termination_conditions or ((self.termination,) if self.termination else ())
 
         for point_index, (point, next_point) in enumerate(zip(self.points, self.points[1:])):
             value = point.value
@@ -164,25 +167,45 @@ class DynamicProfileStep(Step):
                 measurement = context.instrument.read_measurement()
                 if active_mode is not None and context.result.initial_active_measurement is None:
                     context.result.initial_active_measurement = measurement
-                if self.termination is not None and active_mode is not None:
-                    actual = self.termination.measurement_value(measurement, active_mode)
-                    if actual is None:
-                        raise NHRRoutineError(
-                            f"Termination field {self.termination.field!r} is unavailable"
-                        )
-                    if self.termination.relative:
+                for index, condition in enumerate(conditions):
+                    evidence = None
+                    if isinstance(condition, ExternalTerminationCondition):
+                        reader = context.external_signal_reader
+                        if reader is None:
+                            raise NHRRoutineError("External termination requires the service snapshot runtime")
+                        actual, evidence = reader(condition)
+                    elif active_mode is not None:
+                        actual = condition.measurement_value(measurement, active_mode)
+                        if actual is None:
+                            raise NHRRoutineError(
+                                f"Termination field {condition.field!r} is unavailable"
+                            )
+                    else:
+                        continue
+                    if isinstance(condition, Condition) and condition.relative:
+                        if index != len(conditions) - 1 or condition is not self.termination:
+                            raise NHRRoutineError("Relative multi-condition CSV termination is unsupported")
                         if baseline is None:
                             baseline = actual
                         compared = accumulated + max(0.0, actual - baseline)
                         previous_actual = actual
                     else:
                         compared = actual
-                    if self.termination.evaluate_value(compared):
+                    if condition.evaluate_value(compared):
                         context.result.termination_reason = "condition"
-                        context.result.termination_field = self.termination.field
+                        context.result.termination_field = (
+                            condition.signal if isinstance(condition, ExternalTerminationCondition)
+                            else condition.field
+                        )
                         context.result.termination_value = compared
                         context.result.termination_baseline = baseline
                         context.result.termination_measurement = measurement
+                        context.result.termination_detail = {
+                            "index": index,
+                            "source": "external" if evidence is not None else "measurement",
+                            "condition": condition,
+                            "trigger": evidence,
+                        }
                         return
                 remaining = segment_deadline - time.monotonic()
                 if remaining <= 0.0:
@@ -194,8 +217,11 @@ class DynamicProfileStep(Step):
                     arm_lease_supervisor.checkpoint(measurement)
                 context.stop_event.wait(min(self.poll_interval_s, remaining))
 
-        context.result.termination_reason = "profile_end"
         context.result.termination_measurement = context.instrument.read_measurement()
+        if self.termination_conditions:
+            context.result.termination_reason = "condition_timeout"
+            raise NHRRoutineError("No termination condition was reached before profile end")
+        context.result.termination_reason = "profile_end"
 
 
 def dynamic_profile_routine(
@@ -212,6 +238,7 @@ def dynamic_profile_routine(
     current_limit_enabled: bool = True,
     power_limit_enabled: bool = True,
     termination: Condition | None = None,
+    termination_conditions: tuple[Condition | ExternalTerminationCondition, ...] = (),
     configure_limits: bool = True,
 ) -> Routine:
     steps: list[Step] = []
@@ -230,6 +257,7 @@ def dynamic_profile_routine(
                 current_limit_enabled=current_limit_enabled,
                 power_limit_enabled=power_limit_enabled,
                 termination=termination,
+                termination_conditions=termination_conditions,
             ),
             StandbyStep(),
             DisableStep(),
@@ -378,6 +406,7 @@ class SequenceRunner:
         failure_handler: Callable[[Exception], bool] | None = None,
         arm_lease_supervisor=None,
         evidence_dir: Path | None = None,
+        external_signal_reader=None,
     ) -> None:
         self.instrument = instrument
         self.collector = collector
@@ -387,6 +416,7 @@ class SequenceRunner:
         self.failure_handler = failure_handler
         self.arm_lease_supervisor = arm_lease_supervisor
         self.evidence_dir = evidence_dir
+        self.external_signal_reader = external_signal_reader
 
     def run(self, stages: Sequence[SequenceStage]) -> SequenceResult:
         if not stages:
@@ -427,6 +457,7 @@ class SequenceRunner:
                         ),
                         failure_handler=self.failure_handler,
                         arm_lease_supervisor=self.arm_lease_supervisor,
+                        external_signal_reader=self.external_signal_reader,
                     ).run(stage.routine)
                 finally:
                     if self.arm_lease_supervisor is not None:

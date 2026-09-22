@@ -27,6 +27,14 @@ function formatOperatingState(value) {
 function formatCondition(workflow) {
   const condition = workflow.termination;
   if (!condition) return "—";
+  if (Array.isArray(condition)) {
+    const metrics = Array.isArray(workflow.termination_metric) ? workflow.termination_metric : [];
+    return condition.map((item, index) => {
+      const metric = metrics[index];
+      const field = item.signal || item.field;
+      return `${field}: ${metric ? numeric(metric.current) : "—"} ${item.operator} ${item.value ?? "—"} ${item.unit || metric?.unit || ""}`;
+    }).join(" | ");
+  }
   const value = condition.value ?? "—";
   const metric = workflow.termination_metric;
   return `${condition.field}: ${metric ? numeric(metric.current) : "—"} ${condition.operator} ${value} ${metric?.unit || ""}`;

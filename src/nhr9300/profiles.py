@@ -20,7 +20,7 @@ from .external_interlocks import (
     SOURCE_ID_PATTERN,
     ExternalInterlockRule,
 )
-from .routines import Condition, constant_current_hold, constant_power_hold, rest_period
+from .routines import Condition, ExternalTerminationCondition, constant_current_hold, constant_power_hold, rest_period
 from .types import OperatingState, SafetyLimits
 
 
@@ -63,6 +63,7 @@ class StageProfile:
     current_limit_enabled: bool | None = None
     power_limit_enabled: bool | None = None
     termination: Condition | None = None
+    termination_conditions: tuple[Condition | ExternalTerminationCondition, ...] = ()
     csv_path: Path | None = None
     profile_kind: str | None = None
     charge_voltage_limit_v: float | None = None
@@ -83,6 +84,22 @@ class WorkflowConfiguration:
     stages: tuple[StageProfile, ...]
     external_interlocks: tuple[ExternalInterlockRule, ...]
     source_path: Path
+
+    def warnings(self) -> list[str]:
+        warnings: list[str] = []
+        for index, stage in enumerate(self.stages):
+            if not (stage.termination or stage.termination_conditions or stage.type == "cccv"):
+                continue
+            following = self.stages[index + 1:]
+            if following and following[0].type == "rest":
+                continue
+            if not following and self.workflow_limits.post_sequence_rest_s > 0:
+                continue
+            warnings.append(
+                f"Stage {stage.name!r} has no immediate rest after termination; "
+                "relaxation may not be recorded before the next action"
+            )
+        return warnings
 
     def sequence(self, *, configure_limits: bool) -> tuple[SequenceStage, ...]:
         configured = not configure_limits
@@ -116,6 +133,10 @@ class WorkflowConfiguration:
                     arm_duration_s=min(300.0, stage.duration_s + 5.0),
                     termination=termination,
                     termination_activation=termination_activation,
+                    termination_conditions=(
+                        stage.termination_conditions + (termination,)
+                        if stage.type == "cccv" else stage.termination_conditions
+                    ),
                     termination_activation_tolerance=(
                         1e-6 if stage.type == "cccv" else 0.0
                     ),
@@ -135,6 +156,7 @@ class WorkflowConfiguration:
                     arm_duration_s=min(300.0, stage.duration_s + 5.0),
                     termination=stage.termination,
                     configure_limits=include_limits,
+                    termination_conditions=stage.termination_conditions,
                     voltage_limit_enabled=stage.voltage_limit_enabled,
                     current_limit_enabled=stage.current_limit_enabled,
                 )
@@ -156,6 +178,7 @@ class WorkflowConfiguration:
                     power_limit_enabled=stage.power_limit_enabled,
                     termination=stage.termination,
                     configure_limits=include_limits,
+                    termination_conditions=stage.termination_conditions,
                 )
             configured = configured or include_limits
             built.append(
@@ -251,6 +274,50 @@ def load_workflow_profile(path: str | Path) -> WorkflowConfiguration:
             if termination_data is not None
             else None
         )
+        raw_conditions = item.pop("termination_conditions", None)
+        if raw_conditions is not None and termination is not None:
+            raise NHRValidationError(
+                f"stages[{index}] cannot combine termination and termination_conditions"
+            )
+        if raw_conditions is not None and (
+            not isinstance(raw_conditions, list) or not raw_conditions
+        ):
+            raise NHRValidationError(
+                f"stages[{index}].termination_conditions must be a non-empty array"
+            )
+        if raw_conditions is not None and len(raw_conditions) > 32:
+            raise NHRValidationError("A stage cannot have more than 32 termination conditions")
+        conditions: list[Condition | ExternalTerminationCondition] = []
+        for condition_index, raw_condition in enumerate(raw_conditions or []):
+            data = dict(_mapping(
+                raw_condition, f"stages[{index}].termination_conditions[{condition_index}]"
+            ))
+            kind = data.pop("type", "measurement")
+            for numeric in ("value", "max_age_s"):
+                if numeric not in data:
+                    continue
+                if isinstance(data[numeric], bool) or not isinstance(data[numeric], (int, float)):
+                    raise NHRValidationError(
+                        f"stages[{index}].termination_conditions[{condition_index}].{numeric} must be numeric"
+                    )
+                data[numeric] = float(data[numeric])
+            try:
+                if kind == "measurement":
+                    if not isinstance(data.get("field"), str) or not isinstance(data.get("operator"), str):
+                        raise NHRValidationError("Measurement termination requires field and operator strings")
+                    if "relative" in data and not isinstance(data["relative"], bool):
+                        raise NHRValidationError("Measurement termination relative must be true or false")
+                    conditions.append(Condition(**data))
+                elif kind == "external":
+                    if any(not isinstance(data.get(name), str) for name in ("source_id", "signal", "operator", "unit")):
+                        raise NHRValidationError("External termination requires source_id, signal, operator and unit strings")
+                    conditions.append(ExternalTerminationCondition(**data))
+                else:
+                    raise NHRValidationError(f"Unsupported termination type: {kind}")
+            except TypeError as exc:
+                raise NHRValidationError(
+                    f"Invalid stages[{index}].termination_conditions[{condition_index}]: {exc}"
+                ) from exc
         mode_value = item.pop("mode", None)
         mode = OperatingState[str(mode_value).upper()] if mode_value is not None else None
         csv_value = item.pop("csv_path", None)
@@ -260,6 +327,7 @@ def load_workflow_profile(path: str | Path) -> WorkflowConfiguration:
                 StageProfile(
                     mode=mode,
                     termination=termination,
+                    termination_conditions=tuple(conditions),
                     csv_path=csv_path,
                     **item,
                 )
@@ -449,7 +517,7 @@ def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware:
         if not 0.0 < stage.duration_s <= workflow.max_stage_duration_s:
             raise NHRValidationError(f"Stage {stage.name!r} has an invalid duration")
         if stage.type == "rest":
-            if stage.termination is not None:
+            if stage.termination is not None or stage.termination_conditions:
                 raise NHRValidationError("A rest stage cannot have a termination condition")
             continue
         voltage_enabled = _required_bool(
@@ -588,12 +656,57 @@ def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware:
             if not limits.discharge_voltage_min <= stage.discharge_voltage_limit_v <= stage.charge_voltage_limit_v <= limits.charge_voltage_max:
                 raise NHRValidationError(f"Stage {stage.name!r} voltage window is invalid")
 
-        condition = stage.termination
-        if condition is not None:
-            if condition.field not in {"voltage", "capacity_ah", "energy_wh"}:
-                raise NHRValidationError(f"Unsupported termination field: {condition.field}")
-            if condition.value <= 0.0:
+        for condition in stage.termination_conditions + (
+            (stage.termination,) if stage.termination is not None else ()
+        ):
+            if not math.isfinite(condition.value):
+                raise NHRValidationError("Termination value must be finite")
+            if isinstance(condition, Condition) and condition.field != "temperature" and condition.value <= 0.0:
                 raise NHRValidationError("Termination value must be greater than zero")
+            if condition.operator not in {"<", "<=", ">", ">=", "=="}:
+                raise NHRValidationError("Unsupported termination operator")
+            if isinstance(condition, ExternalTerminationCondition):
+                if not SOURCE_ID_PATTERN.fullmatch(condition.source_id):
+                    raise NHRValidationError("External termination source_id is invalid")
+                if not condition.signal.strip() or not condition.unit.strip():
+                    raise NHRValidationError("External termination requires signal and unit")
+                if not math.isfinite(condition.max_age_s) or condition.max_age_s <= 0:
+                    raise NHRValidationError("External termination max_age_s must be finite and positive")
+                if condition.operator == "==":
+                    raise NHRValidationError("External numeric termination cannot use ==")
+                guards = [
+                    rule for rule in configuration.external_interlocks
+                    if rule.source_id == condition.source_id
+                    and rule.signal == condition.signal
+                    and rule.unit == condition.unit
+                    and rule.applies in {"runtime", "both"}
+                ]
+                if condition.operator in {"<", "<="}:
+                    guarded = any(
+                        rule.comparison in {"minimum", "range"}
+                        and rule.minimum is not None
+                        and rule.minimum < condition.value
+                        for rule in guards
+                    )
+                else:
+                    guarded = any(
+                        rule.comparison in {"maximum", "range"}
+                        and rule.maximum is not None
+                        and rule.maximum > condition.value
+                        for rule in guards
+                    )
+                if not guarded:
+                    raise NHRValidationError(
+                        f"External termination {condition.signal!r} requires a strictly "
+                        "more extreme runtime interlock on the same signal"
+                    )
+                continue
+            if stage.type == "csv_profile" and stage.termination_conditions and condition.relative:
+                raise NHRValidationError(
+                    "Relative CSV termination is supported only by the legacy single termination"
+                )
+            if condition.field not in {"voltage", "capacity_ah", "energy_wh", "temperature"}:
+                raise NHRValidationError(f"Unsupported termination field: {condition.field}")
             if condition.field in {"capacity_ah", "energy_wh"}:
                 if not condition.relative:
                     raise NHRValidationError(f"{condition.field} termination requires relative=true")

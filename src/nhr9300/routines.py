@@ -94,6 +94,19 @@ class Condition:
             ) from exc
 
 
+@dataclass(frozen=True, slots=True)
+class ExternalTerminationCondition:
+    source_id: str
+    signal: str
+    operator: str
+    value: float
+    max_age_s: float
+    unit: str
+
+    def evaluate_value(self, actual: float) -> bool:
+        return Condition(self.signal, self.operator, self.value).evaluate_value(actual)
+
+
 class Step:
     name = "step"
 
@@ -152,6 +165,7 @@ class WaitStep(Step):
     mode: OperatingState | None = None
     activation_condition: Condition | None = None
     activation_tolerance: float = 0.0
+    termination_conditions: tuple[Condition | ExternalTerminationCondition, ...] = ()
     name = "wait"
 
     def execute(self, context: RoutineContext) -> None:
@@ -160,10 +174,11 @@ class WaitStep(Step):
         if self.activation_tolerance < 0.0:
             raise NHRValidationError("Activation tolerance cannot be negative")
         deadline = time.monotonic() + self.duration_s
-        baseline: float | None = None
         latest_measurement: Measurement | None = None
         latest_compared: float | None = None
         condition_active = self.activation_condition is None
+        conditions = self.termination_conditions or ((self.condition,) if self.condition else ())
+        baselines: dict[int, float] = {}
         while True:
             if context.stop_event.is_set():
                 raise InterruptedError("Routine stop requested")
@@ -192,25 +207,44 @@ class WaitStep(Step):
                     rel_tol=0.0,
                     abs_tol=self.activation_tolerance,
                 )
-            if self.condition:
-                actual = self.condition.measurement_value(measurement, self.mode)
-                if actual is None:
-                    raise NHRRoutineError(
-                        f"Termination field {self.condition.field!r} is unavailable"
-                    )
-                if self.condition.relative:
-                    if baseline is None:
-                        baseline = actual
-                    compared = actual - baseline
+            for index, condition in enumerate(conditions):
+                evidence = None
+                if isinstance(condition, ExternalTerminationCondition):
+                    reader = context.external_signal_reader
+                    if reader is None:
+                        raise NHRRoutineError("External termination requires the service snapshot runtime")
+                    actual, evidence = reader(condition)
                 else:
+                    actual = condition.measurement_value(measurement, self.mode)
+                    if actual is None:
+                        raise NHRRoutineError(
+                            f"Termination field {condition.field!r} is unavailable"
+                        )
+                if isinstance(condition, Condition) and condition.relative:
+                    initial = baselines.setdefault(index, actual)
+                    compared = actual - initial
+                else:
+                    initial = None
                     compared = actual
                 latest_compared = compared
-                if condition_active and self.condition.evaluate_value(compared):
+                # CCCV current cutoff is valid only after voltage activation;
+                # other configured limits can terminate the stage immediately.
+                activated = condition_active or condition is not self.condition
+                if activated and condition.evaluate_value(compared):
                     context.result.termination_reason = "condition"
-                    context.result.termination_field = self.condition.field
+                    context.result.termination_field = (
+                        condition.signal if isinstance(condition, ExternalTerminationCondition)
+                        else condition.field
+                    )
                     context.result.termination_value = compared
-                    context.result.termination_baseline = baseline
+                    context.result.termination_baseline = initial
                     context.result.termination_measurement = measurement
+                    context.result.termination_detail = {
+                        "index": index,
+                        "source": "external" if evidence is not None else "measurement",
+                        "condition": condition,
+                        "trigger": evidence,
+                    }
                     return
             remaining_s = deadline - time.monotonic()
             if remaining_s <= 0.0:
@@ -221,16 +255,18 @@ class WaitStep(Step):
             if arm_lease_supervisor is not None:
                 arm_lease_supervisor.checkpoint(measurement)
             context.stop_event.wait(min(self.poll_interval_s, remaining_s))
-        if self.condition is not None:
+        if conditions:
             context.result.termination_reason = "condition_timeout"
-            context.result.termination_field = self.condition.field
+            first = conditions[0]
+            context.result.termination_field = first.signal if isinstance(first, ExternalTerminationCondition) else first.field
             context.result.termination_value = latest_compared
-            context.result.termination_baseline = baseline
+            context.result.termination_baseline = baselines.get(0)
             context.result.termination_measurement = latest_measurement
-            raise NHRRoutineError(
-                f"Termination condition {self.condition.field!r} was not reached "
-                f"within {self.duration_s:.3f} s"
-            )
+            if self.condition is not None and not self.termination_conditions:
+                detail = f"Termination condition {self.condition.field!r} was not reached"
+            else:
+                detail = "No termination condition was reached"
+            raise NHRRoutineError(f"{detail} within {self.duration_s:.3f} s")
         context.result.termination_reason = "duration"
         context.result.termination_measurement = latest_measurement
 
@@ -264,6 +300,7 @@ class RoutineContext:
     stop_event: threading.Event
     result: RoutineResult
     arm_lease_supervisor: Any | None = None
+    external_signal_reader: Callable[[ExternalTerminationCondition], tuple[float, dict[str, Any]]] | None = None
 
 
 class RoutineRunner:
@@ -277,6 +314,7 @@ class RoutineRunner:
         progress_callback: Callable[[str, str], None] | None = None,
         failure_handler: Callable[[Exception], bool] | None = None,
         arm_lease_supervisor: Any | None = None,
+        external_signal_reader: Callable[[ExternalTerminationCondition], tuple[float, dict[str, Any]]] | None = None,
     ) -> None:
         self.instrument = instrument
         self.collector = collector
@@ -287,6 +325,7 @@ class RoutineRunner:
         self._progress_callback = progress_callback
         self._failure_handler = failure_handler
         self._arm_lease_supervisor = arm_lease_supervisor
+        self._external_signal_reader = external_signal_reader
         self._thread: threading.Thread | None = None
 
     @property
@@ -358,6 +397,7 @@ class RoutineRunner:
             self._stop,
             result,
             self._arm_lease_supervisor,
+            self._external_signal_reader,
         )
         try:
             for index, step in enumerate(routine.steps):
@@ -422,6 +462,7 @@ def constant_current_hold(
     termination: Condition | None = None,
     termination_activation: Condition | None = None,
     termination_activation_tolerance: float = 0.0,
+    termination_conditions: tuple[Condition | ExternalTerminationCondition, ...] = (),
     configure_limits: bool = True,
     voltage_limit_enabled: bool = True,
     power_limit_enabled: bool = True,
@@ -455,6 +496,7 @@ def constant_current_hold(
                 mode=mode,
                 activation_condition=termination_activation,
                 activation_tolerance=termination_activation_tolerance,
+                termination_conditions=termination_conditions,
             ),
             StandbyStep(),
             DisableStep(),
@@ -477,6 +519,7 @@ def constant_power_hold(
     duration_s: float,
     arm_duration_s: float = 30.0,
     termination: Condition | None = None,
+    termination_conditions: tuple[Condition | ExternalTerminationCondition, ...] = (),
     configure_limits: bool = True,
     voltage_limit_enabled: bool = True,
     current_limit_enabled: bool = True,
@@ -503,7 +546,7 @@ def constant_power_hold(
                     control_mode="power",
                 )
             ),
-            WaitStep(duration_s, termination, mode=mode),
+            WaitStep(duration_s, termination, mode=mode, termination_conditions=termination_conditions),
             StandbyStep(),
             DisableStep(),
         )

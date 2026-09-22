@@ -264,6 +264,8 @@ class OperatorConsole:
         before = self.config.read_text(encoding="utf-8")
         updated, bundle = prepared_config(self.config, self.selected)
         self.show(f"Validated bundle: {bundle.digest}")
+        for warning in bundle.configuration.warnings():
+            self.show(f"WARNING: {warning}")
         after = json.dumps(updated, indent=2, ensure_ascii=False) + "\n"
         if json.loads(before) == updated:
             self.show("Configuration already matches; no update needed")
@@ -290,6 +292,8 @@ class OperatorConsole:
                       if item["workflow_id"] == self.selected)
         if not remote.get("available") or remote.get("bundle_digest") != bundle.digest:
             raise ValueError(f"Registered bundle unavailable or different; restart/check approvals: {remote.get('error')}")
+        for warning in remote.get("warnings", []):
+            self.show(f"WARNING: {warning}")
         return bundle.digest
 
     def preflight(self) -> None:

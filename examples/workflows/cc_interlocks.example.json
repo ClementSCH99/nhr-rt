@@ -1,5 +1,5 @@
 {
-  "test_description": "UNAPPROVED CC with BMS temperature trip and isolation permissive",
+  "test_description": "UNAPPROVED CC with critical BMS temperature and isolation interlocks",
   "bench_description": "REPLACE_WITH_REVIEWED_BENCH_DESCRIPTION",
   "stop_procedure": "REPLACE_WITH_REVIEWED_STOP_PROCEDURE",
   "expected_resource": "REPLACE_WITH_RESOURCE",

@@ -251,6 +251,52 @@ stage with a termination condition must reach that condition before its
 duration expires. The duration is then a maximum allowed time, not an alternate
 successful termination.
 
+### Several normal stage termination conditions
+
+An active stage can use `termination_conditions` instead of the legacy single
+`termination`. Conditions are checked in profile order on each cycle. The first
+one met ends that stage with `passed`; the report identifies its index, signal,
+value, and, for BMS data, the exact snapshot sequence and timestamps. If no
+condition is met before `duration_s`, the stage fails. An immediate valid
+condition also ends the stage immediately. Conditions do not apply during a
+following rest stage.
+
+Each configured condition is evaluated every cycle using the current valid
+measurement or snapshot; there is currently no debounce. If several are true in
+one cycle, the first in the JSON array wins. A successful condition ends the
+active stage through standby and disabled output, then advances to the next
+configured stage. A rest stage continues for its reviewed duration while the
+interlocks remain active. A critical interlock violation stops the whole
+workflow. `termination_conditions` and legacy `termination` cannot appear
+together in one stage. CCCV retains its built-in current cutoff after voltage
+activation; any configured conditions are evaluated before that cutoff.
+
+For example, a discharge may stop on either discharged capacity or the BMS
+minimum cell voltage:
+
+```json
+"termination_conditions": [
+  {"field": "capacity_ah", "operator": ">=", "value": 50.0, "relative": true},
+  {"type": "external", "source_id": "bms-poc-v2", "signal": "MinCellVolt",
+   "operator": "<=", "value": 2.75, "max_age_s": 2.5, "unit": "V"}
+]
+```
+
+The external signal must also have a runtime interlock with a strictly more
+extreme threshold on the same source, signal and unit, such as `minimum: 2.65`
+V for this example. The service checks interlocks before terminations. Missing, rejected,
+unhealthy, or stale BMS data cannot cause a normal `passed` result. Review both
+thresholds and the physical limits for the DUT; the example values are not an
+approval. Continue publishing BMS snapshots through the following rest and
+workflow finalization. The registry, operator and report warn if an active
+stage with a termination condition has no immediate rest afterward.
+
+The full [unapproved discharge example](../examples/workflows/discharge_terminations.example.json)
+also shows a temperature termination, independent critical limits and a 10 s
+rest. No BMS condition is needed in a rest stage; configured stage conditions
+are forbidden there. `post_sequence_rest_s` remains an alternative when only a
+final relaxation period is needed.
+
 ### Record relaxation after a successful sequence
 
 Set `workflow_limits.post_sequence_rest_s` to a reviewed number of seconds to

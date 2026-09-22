@@ -402,6 +402,60 @@ def _profile(path) -> None:
     )
 
 
+def test_service_external_termination_keeps_rest_and_final_evidence(tmp_path) -> None:
+    profile = tmp_path / "workflow.json"
+    _profile(profile)
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    data["external_interlocks"][0]["max_age_s"] = 5.0
+    data["external_interlocks"][1]["max_age_s"] = 5.0
+    data["stages"][0]["termination_conditions"] = [
+        {"type": "external", "source_id": "bms-main", "signal": "pack_voltage_v",
+         "operator": "<=", "value": 89.0, "max_age_s": 5.0, "unit": "V"},
+    ]
+    data["stages"].append({"name": "relaxation", "type": "rest", "duration_s": 0.3})
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    bundle = WorkflowBundle.load(profile, hardware=False)
+    config = {
+        "output_dir": str(tmp_path / "runs"),
+        "instruments": [{"id": "sim-m5", "backend": "simulator", "rate_hz": 10,
+                         "remote_workflow_control": True}],
+        "workflow_registry": [{
+            "workflow_id": "termination-v1", "instrument_id": "sim-m5",
+            "profile_path": str(profile), "expected_resource": "sim-m5",
+            "expected_serial_number": "SIM-9300", "expected_bundle_digest": bundle.digest,
+            "approved": True,
+        }],
+    }
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        client.submit_external_snapshot(
+            "sim-m5", "bms-main", sequence=1, timestamp_utc=_now(),
+            health="ok", signals={"pack_voltage_v": 89.0, "hv_permissive": True},
+        )
+        assert client.preflight_workflow("sim-m5", "termination-v1", bundle.digest)["passed"]
+        started = client.start_workflow(
+            "sim-m5", request_id=str(uuid.uuid4()),
+            workflow_id="termination-v1", bundle_digest=bundle.digest,
+        )
+        final = client.wait_workflow("sim-m5", started["run_id"], timeout_s=5)
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        stages = report["sequence_result"]["stages"]
+        assert final["state"] == "passed", json.dumps(final)
+        assert final["recording"]["finalized"] is True
+        assert [stage["state"] for stage in stages] == ["passed", "passed"]
+        assert stages[0]["termination_detail"]["trigger"]["source_sequence"] == 1
+        assert report["sequence_result"]["stage_sample_counts"][1] > 0
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        manager.close()
+        server.server_close()
+
+
 def test_unrelated_error_is_not_masked_by_a_pending_stop(
     tmp_path, monkeypatch
 ) -> None:

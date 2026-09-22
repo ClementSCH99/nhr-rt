@@ -187,6 +187,7 @@ class RoutineResult:
     termination_baseline: float | None = None
     initial_active_measurement: Measurement | None = None
     termination_measurement: Measurement | None = None
+    termination_detail: dict[str, Any] | None = None
     events: list[RoutineEvent] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 

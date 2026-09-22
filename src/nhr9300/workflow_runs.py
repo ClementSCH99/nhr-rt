@@ -207,6 +207,7 @@ class WorkflowRunController:
                         bundle_digest=bundle_digest,
                         simulator_initial_state_policy=self.simulator_initial_state_policy,
                         external_interlock_evidence=self.external_interlocks.status,
+                        external_signal_reader=self.external_interlocks.read_termination_signal,
                     )
                 finally:
                     if recording_started:
@@ -444,7 +445,9 @@ class WorkflowRunController:
             else None
         )
         termination = None
-        if profile is not None and profile.termination is not None:
+        if profile is not None and profile.termination_conditions:
+            termination = to_jsonable(profile.termination_conditions)
+        elif profile is not None and profile.termination is not None:
             termination = to_jsonable(profile.termination)
         elif profile is not None and profile.type == "cccv":
             termination = {
@@ -577,6 +580,7 @@ class WorkflowRunController:
                     ),
                     runtime_safety_failure=self.handle_runtime_failure,
                     arm_lease_supervisor=supervisor,
+                    external_signal_reader=self.external_interlocks.read_termination_signal,
                 )
             report = json.loads(outcome.report_path.read_text(encoding="utf-8"))
             sequence = report.get("sequence_result", {})
@@ -717,8 +721,23 @@ class WorkflowRunController:
                     result["progress"] = result["termination_metric"]
             return result
 
-    def _termination_progress(self, run: Mapping[str, Any]) -> dict[str, Any]:
+    def _termination_progress(self, run: Mapping[str, Any]) -> dict[str, Any] | list[dict[str, Any]]:
         termination = run["termination"]
+        if isinstance(termination, list):
+            return [
+                self._termination_progress({**run, "termination": item})
+                for item in termination
+            ]
+        if "field" not in termination:
+            return {
+                "kind": "termination_metric",
+                "field": termination["signal"],
+                "operator": termination["operator"],
+                "current": None,
+                "target": termination["value"],
+                "unit": termination.get("unit"),
+                "percent": None,
+            }
         field = termination["field"]
         target = termination["value"]
         current: float | None = None

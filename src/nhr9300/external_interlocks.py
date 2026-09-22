@@ -8,10 +8,12 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from .errors import NHRInterlockError, NHRValidationError
 from .types import InterlockSignal
+if TYPE_CHECKING:
+    from .routines import ExternalTerminationCondition
 
 
 SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -347,6 +349,44 @@ class ExternalInterlockManager:
                 for signal in failed
             )
             raise NHRInterlockError(f"Unsafe external interlocks: {details}")
+
+    def read_termination_signal(
+        self, condition: ExternalTerminationCondition
+    ) -> tuple[float, dict[str, Any]]:
+        """Return a fresh numeric trigger and its exact snapshot provenance."""
+        with self._lock:
+            failed = [signal for signal in self.signals() if not signal.safe]
+            if failed:
+                raise NHRInterlockError(
+                    "Unsafe external interlocks: "
+                    + ", ".join(f"{item.name} ({item.reason or item.detail})" for item in failed)
+                )
+            fault = self._source_faults.get(condition.source_id)
+            snapshot = self._snapshots.get(condition.source_id)
+            if fault or snapshot is None:
+                raise NHRInterlockError(
+                    f"Termination source {condition.source_id!r} is unavailable: {fault or 'missing'}"
+                )
+            age_s = max(0.0, time.monotonic() - snapshot.data_monotonic)
+            value = snapshot.signals.get(condition.signal)
+            if snapshot.health != "ok" or age_s > condition.max_age_s:
+                raise NHRInterlockError(
+                    f"Termination signal {condition.signal!r} is unhealthy or stale"
+                )
+            if value is None or isinstance(value, bool):
+                raise NHRInterlockError(
+                    f"Termination signal {condition.signal!r} is missing or non-numeric"
+                )
+            return float(value), {
+                "source_id": condition.source_id,
+                "signal": condition.signal,
+                "value": value,
+                "unit": condition.unit,
+                "source_sequence": snapshot.sequence,
+                "source_timestamp_utc": snapshot.timestamp_utc.isoformat(),
+                "source_received_at_utc": snapshot.received_at_utc.isoformat(),
+                "source_age_s_at_evaluation": age_s,
+            }
 
     @staticmethod
     def _snapshot_public(snapshot: ExternalSnapshot) -> dict[str, Any]:

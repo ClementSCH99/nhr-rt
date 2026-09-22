@@ -1,0 +1,104 @@
+{
+  "test_description": "UNAPPROVED discharge: first of capacity, cell voltage or cell temperature; measured relaxation",
+  "bench_description": "REPLACE_WITH_REVIEWED_BENCH_DESCRIPTION",
+  "stop_procedure": "REPLACE_WITH_REVIEWED_STOP_PROCEDURE",
+  "expected_resource": "REPLACE_WITH_RESOURCE",
+  "expected_serial_number": "REPLACE_WITH_SERIAL_NUMBER",
+  "simulation_initial_voltage_v": 90.0,
+  "watchdog_enabled": true,
+  "safety_limits": {
+    "charge_current": 5.0,
+    "charge_voltage_max": 100.0,
+    "charge_power": 500.0,
+    "discharge_current": 5.0,
+    "discharge_voltage_min": 80.0,
+    "discharge_power": 500.0,
+    "approved": false,
+    "profile_name": "UNAPPROVED illustrative safety limits"
+  },
+  "workflow_limits": {
+    "max_current_a": 3.0,
+    "max_power_w": 250.0,
+    "max_stage_duration_s": 60.0,
+    "max_sequence_duration_s": 45.0,
+    "approved": false,
+    "profile_name": "UNAPPROVED illustrative discharge and rest"
+  },
+  "stages": [
+    {
+      "name": "cc-discharge",
+      "type": "constant_current",
+      "mode": "discharge",
+      "duration_s": 30.0,
+      "current_a": 2.0,
+      "voltage_v": 82.0,
+      "power_w": 250.0,
+      "voltage_limit_enabled": true,
+      "current_limit_enabled": true,
+      "power_limit_enabled": false,
+      "termination_conditions": [
+        {
+          "field": "capacity_ah",
+          "operator": ">=",
+          "value": 0.01,
+          "relative": true
+        },
+        {
+          "type": "external",
+          "source_id": "bms",
+          "signal": "MinCellVolt",
+          "operator": "<=",
+          "value": 2.75,
+          "max_age_s": 2.0,
+          "unit": "V"
+        },
+        {
+          "type": "external",
+          "source_id": "bms",
+          "signal": "MaxCellTemp",
+          "operator": ">=",
+          "value": 45.0,
+          "max_age_s": 2.0,
+          "unit": "degC"
+        }
+      ]
+    },
+    {
+      "name": "relaxation",
+      "type": "rest",
+      "duration_s": 10.0
+    }
+  ],
+  "external_interlocks": [
+    {
+      "rule_id": "cell_voltage_critical",
+      "source_id": "bms",
+      "signal": "MinCellVolt",
+      "comparison": "minimum",
+      "minimum": 2.65,
+      "unit": "V",
+      "applies": "both",
+      "max_age_s": 2.0
+    },
+    {
+      "rule_id": "cell_temperature_critical",
+      "source_id": "bms",
+      "signal": "MaxCellTemp",
+      "comparison": "maximum",
+      "maximum": 55.0,
+      "unit": "degC",
+      "applies": "both",
+      "max_age_s": 2.0
+    },
+    {
+      "rule_id": "isolation_permissive",
+      "source_id": "bms",
+      "signal": "IsolationOK",
+      "comparison": "equals",
+      "expected": true,
+      "unit": "bool",
+      "applies": "both",
+      "max_age_s": 2.0
+    }
+  ]
+}

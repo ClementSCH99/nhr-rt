@@ -157,6 +157,7 @@ class WorkflowRegistryEntry:
             "test_description": (
                 configuration.test_description if configuration else None
             ),
+            "warnings": configuration.warnings() if configuration else [],
             "stage_count": (
                 len(configuration.stages)
                 + int(configuration.workflow_limits.post_sequence_rest_s > 0.0)

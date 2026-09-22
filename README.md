@@ -56,12 +56,17 @@ python -m pip install -e ".[test]"
 
 ## First safe run
 
-Copy and review an example, then run it in simulation:
+Run the dedicated simulator exercise:
 
 ```powershell
 .\.venv32\Scripts\nhr9300-run.exe --simulate `
-  --profile .\examples\workflows\sequence.example.json
+  --profile .\examples\operator-simulation\rest.json
 ```
+
+The [workflow library](examples/workflows/README.md) contains unapproved
+templates, including a discharge with several normal termination conditions,
+critical BMS interlocks and measured relaxation. Review and approve a copy
+before registering it; those templates are not runnable as approved workflows.
 
 For the guided two-terminal simulator experience:
 
