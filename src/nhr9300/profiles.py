@@ -611,8 +611,8 @@ def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware:
             if stage.profile_kind not in {"current", "power"}:
                 raise NHRValidationError("csv_profile profile_kind must be current or power")
             points = load_profile_csv(stage.csv_path, stage.profile_kind)
-            if points[-1].time_s != stage.duration_s:
-                raise NHRValidationError("CSV final time must equal the stage duration_s")
+            if points[-1].time_s > stage.duration_s:
+                raise NHRValidationError("CSV final time cannot exceed stage duration_s")
             peak = max(abs(point.value) for point in points)
             cap = workflow.max_current_a if stage.profile_kind == "current" else workflow.max_power_w
             if peak > cap:
@@ -639,10 +639,16 @@ def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware:
                 raise NHRValidationError(f"Stage {stage.name!r} current limit is too high")
             if power_limit > workflow.max_power_w:
                 raise NHRValidationError(f"Stage {stage.name!r} power limit is too high")
-            if current_limit > min(limits.charge_current, limits.discharge_current):
-                raise NHRValidationError(f"Stage {stage.name!r} current limit exceeds safety limits")
-            if power_limit > min(limits.charge_power, limits.discharge_power):
-                raise NHRValidationError(f"Stage {stage.name!r} power limit exceeds safety limits")
+            # Zero requests retain the last active direction; they do not
+            # introduce a new charge or discharge requirement.
+            directions = {point.value > 0 for point in points if point.value != 0}
+            for charging in directions:
+                directional_current = limits.charge_current if charging else limits.discharge_current
+                directional_power = limits.charge_power if charging else limits.discharge_power
+                if current_limit > directional_current:
+                    raise NHRValidationError(f"Stage {stage.name!r} current limit exceeds safety limits")
+                if power_limit > directional_power:
+                    raise NHRValidationError(f"Stage {stage.name!r} power limit exceeds safety limits")
             for point in points:
                 directional_limit = (
                     limits.charge_current if point.value > 0 else limits.discharge_current

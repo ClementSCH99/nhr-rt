@@ -362,6 +362,26 @@ class NHRServiceClient:
             {},
         )
 
+    def end_workflow_stage(
+        self, instrument_id: str, run_id: str, stage_index: int
+    ) -> dict[str, Any]:
+        """Request early completion of the exact active stage."""
+        return self._request(
+            "POST",
+            f"/instruments/{instrument_id}/workflow-runs/{run_id}/stage-end",
+            {"stage_index": stage_index},
+        )
+
+    def explain_workflow_stage_end(
+        self, instrument_id: str, run_id: str, intervention_id: str, reason: str
+    ) -> dict[str, Any]:
+        """Add operator context while the run evidence is still open."""
+        return self._request(
+            "POST",
+            f"/instruments/{instrument_id}/workflow-runs/{run_id}/stage-end/reason",
+            {"intervention_id": intervention_id, "reason": reason},
+        )
+
     def wait_workflow(
         self,
         instrument_id: str,

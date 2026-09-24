@@ -25,17 +25,19 @@
     "approved": false,
     "profile_name": "UNAPPROVED CCCV workflow"
   },
-  "stages": [{
-    "name": "cccv-charge",
-    "type": "cccv",
-    "duration_s": 90.0,
-    "mode": "charge",
-    "current_a": 2.0,
-    "voltage_v": 94.0,
-    "power_w": 250.0,
-    "cutoff_current_a": 0.5,
-    "voltage_limit_enabled": true,
-    "current_limit_enabled": true,
-    "power_limit_enabled": false
-  }]
+  "stages": [
+    {
+      "name": "cccv-charge",
+      "type": "cccv",
+      "duration_s": 90.0,
+      "mode": "charge",
+      "current_a": 2.0,
+      "voltage_v": 94.0,
+      "power_w": 250.0,
+      "cutoff_current_a": 0.5,
+      "voltage_limit_enabled": true,
+      "current_limit_enabled": true,
+      "power_limit_enabled": false
+    }
+  ]
 }

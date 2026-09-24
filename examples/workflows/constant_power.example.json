@@ -24,21 +24,24 @@
     "approved": false,
     "profile_name": "UNAPPROVED CP workflow"
   },
-  "stages": [{
-    "name": "constant-power",
-    "type": "constant_power",
-    "duration_s": 30.0,
-    "mode": "discharge",
-    "current_a": 3.0,
-    "voltage_v": 82.0,
-    "power_w": 200.0,
-    "voltage_limit_enabled": true,
-    "current_limit_enabled": true,
-    "power_limit_enabled": true,
-    "termination": {
-      "field": "energy_wh",
-      "operator": ">=",
-      "value": 1.0,
-      "relative": true}
-  }]
+  "stages": [
+    {
+      "name": "constant-power",
+      "type": "constant_power",
+      "duration_s": 30.0,
+      "mode": "discharge",
+      "current_a": 3.0,
+      "voltage_v": 82.0,
+      "power_w": 200.0,
+      "voltage_limit_enabled": true,
+      "current_limit_enabled": true,
+      "power_limit_enabled": true,
+      "termination": {
+        "field": "energy_wh",
+        "operator": ">=",
+        "value": 1.0,
+        "relative": true
+      }
+    }
+  ]
 }

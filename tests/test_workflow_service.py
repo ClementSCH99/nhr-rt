@@ -13,6 +13,7 @@ import pytest
 
 import nhr9300.execution as execution_module
 import nhr9300.routines as routines_module
+import nhr9300.sequences as sequences_module
 import nhr9300.workflow_runs as workflow_runs_module
 from nhr9300.client import NHRServiceClient
 from nhr9300.errors import NHRError, NHRPolicyError
@@ -113,6 +114,125 @@ def _wait_terminal(client: NHRServiceClient, run_id: str) -> dict:
             return state
         assert time.monotonic() < deadline
         time.sleep(0.02)
+
+
+def test_operator_ends_discharge_stage_and_recording_continues_into_rest(tmp_path) -> None:
+    profile = _profile(tmp_path / "workflow.json", duration_s=3.0)
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    data["stages"] = [
+        {
+            "name": "power-discharge", "type": "constant_power",
+            "mode": "discharge", "duration_s": 3.0,
+            "current_a": 5.0, "voltage_v": 82.0, "power_w": 200.0,
+            "voltage_limit_enabled": True, "current_limit_enabled": True,
+            "power_limit_enabled": True,
+        },
+        {"name": "cooldown-rest", "type": "rest", "duration_s": 1.5},
+    ]
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    config = _config(tmp_path, profile)
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        started = client.start_workflow(
+            "sim-remote", request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+        )
+        run_id = started["run_id"]
+        deadline = time.monotonic() + 5
+        while True:
+            snapshot = client.workflow_run("sim-remote", run_id)
+            if (snapshot.get("stage") or {}).get("index") == 0 and (snapshot.get("step") or "").endswith("_wait"):
+                break
+            assert time.monotonic() < deadline, snapshot
+            time.sleep(0.02)
+
+        intervention = client.end_workflow_stage("sim-remote", run_id, 0)
+        repeated = client.end_workflow_stage("sim-remote", run_id, 0)
+        assert repeated["intervention_id"] == intervention["intervention_id"]
+        with pytest.raises(NHRError, match="Expected stage"):
+            client.end_workflow_stage("sim-remote", run_id, 1)
+        detail = client.explain_workflow_stage_end(
+            "sim-remote", run_id, intervention["intervention_id"],
+            "Cooling was not started",
+        )
+        assert detail["reason_detail"] == "Cooling was not started"
+        assert client.explain_workflow_stage_end(
+            "sim-remote", run_id, intervention["intervention_id"],
+            "Cooling was not started",
+        )["reason_detail"] == "Cooling was not started"
+        with pytest.raises(NHRError, match="already recorded"):
+            client.explain_workflow_stage_end(
+                "sim-remote", run_id, intervention["intervention_id"],
+                "Different reason",
+            )
+
+        final = _wait_terminal(client, run_id)
+        assert final["state"] == "passed", final
+        assert final["recording"]["finalized"] is True
+        assert final["operator_interventions"][0]["status"] == "applied"
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        assert report["operator_intervention"] is True
+        assert report["operator_interventions"][0]["reason_detail"] == "Cooling was not started"
+        stages = report["sequence_result"]["stages"]
+        assert stages[0]["termination_reason"] == "operator_stage_end"
+        assert stages[1]["state"] == "passed"
+        assert report["sequence_result"]["state"] == "passed"
+        with Path(final["recording"]["path"]).open(newline="", encoding="utf-8") as handle:
+            session_rows = list(csv.DictReader(handle))
+        assert session_rows
+        assert {row["routine_id"] for row in session_rows} >= {
+            stages[0]["routine_id"], stages[1]["routine_id"]
+        }
+        assert manager.get("sim-remote").collector.running is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+
+
+def test_stage_end_readback_failure_does_not_start_next_stage(tmp_path, monkeypatch) -> None:
+    profile = _profile(
+        tmp_path / "workflow.json", duration_s=3.0, post_sequence_rest_s=0.4
+    )
+    config = _config(tmp_path, profile)
+    server, _manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        started = client.start_workflow(
+            "sim-remote", request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+        )
+        run_id = started["run_id"]
+        deadline = time.monotonic() + 5
+        while True:
+            snapshot = client.workflow_run("sim-remote", run_id)
+            if (snapshot.get("stage") or {}).get("index") == 0 and (snapshot.get("step") or "").endswith("_wait"):
+                break
+            assert time.monotonic() < deadline, snapshot
+            time.sleep(0.02)
+
+        def unsafe_readback(_status):
+            raise RuntimeError("Injected unsafe stage transition")
+
+        monkeypatch.setattr(sequences_module, "require_disabled_inactive", unsafe_readback)
+        client.end_workflow_stage("sim-remote", run_id, 0)
+        final = _wait_terminal(client, run_id)
+        assert final["state"] == "failed"
+        assert final["operator_interventions"][0]["status"] == "not_applied"
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        assert "Injected unsafe stage transition" in report["error"]
+        assert "sequence_result" not in report
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
 
 
 def test_bundle_detects_bytes_changed_after_startup(tmp_path) -> None:
@@ -680,14 +800,14 @@ def test_service_shutdown_stops_active_approved_workflow(tmp_path) -> None:
 def test_service_owned_renewals_are_durable_and_finish_safe(
     tmp_path, monkeypatch
 ) -> None:
-    profile = _profile(tmp_path / "workflow.json", duration_s=0.4)
+    profile = _profile(tmp_path / "workflow.json", duration_s=2.0)
     data = json.loads(profile.read_text(encoding="utf-8"))
     data["workflow_limits"]["arm_lease_renewal_enabled"] = True
     data["stages"] = [
         {
             "name": "accelerated-long-cc",
             "type": "constant_current",
-            "duration_s": 0.4,
+            "duration_s": 2.0,
             "mode": "charge",
             "current_a": 2,
             "voltage_v": 99,
@@ -711,6 +831,9 @@ def test_service_owned_renewals_are_durable_and_finish_safe(
         workflow_runs_module, "ArmLeaseSupervisor", accelerated_supervisor
     )
     server, manager = build_server(config, port=0, announce=False)
+    managed = manager.get("sim-remote")
+    original_arm = managed.instrument.arm
+    monkeypatch.setattr(managed.instrument, "arm", lambda _duration: original_arm(1.0))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host, port = server.server_address
@@ -736,7 +859,7 @@ def test_service_owned_renewals_are_durable_and_finish_safe(
         ]
 
         assert final["state"] == "passed"
-        assert final["arm_lease"]["renewal_count"] >= 2
+        assert final["arm_lease"]["renewal_count"] == 1
         assert decisions.count("renewed") == final["arm_lease"]["renewal_count"]
         assert artifacts["arm_lease"] == report["arm_lease"]
         assert final["final_safe_state"]["verified"] is True
@@ -856,6 +979,8 @@ def test_renewal_failure_requests_controlled_stop_and_preserves_cause(
     )
     server, manager = build_server(config, port=0, announce=False)
     managed = manager.get("sim-remote")
+    original_arm = managed.instrument.arm
+    monkeypatch.setattr(managed.instrument, "arm", lambda _duration: original_arm(1.0))
     monkeypatch.setattr(
         managed.instrument,
         "renew_arm",

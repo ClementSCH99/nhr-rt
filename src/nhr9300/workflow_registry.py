@@ -34,9 +34,8 @@ def _logical_csv_paths(profile_bytes: bytes) -> tuple[str, ...]:
                 f"Dynamic profile path must remain inside the bundle: {raw}"
             )
         normalized = logical.as_posix()
-        if normalized in paths:
-            raise NHRValidationError(f"Duplicate dynamic profile path: {normalized}")
-        paths.append(normalized)
+        if normalized not in paths:
+            paths.append(normalized)
     return tuple(paths)
 
 

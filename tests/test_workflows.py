@@ -534,6 +534,17 @@ def test_workflow_contract_builds_all_stage_types(tmp_path) -> None:
 
     validate_workflow_profile(configuration, hardware=False)
     validate_workflow_profile(configuration, hardware=True)
+    with_margin = replace(
+        configuration,
+        stages=configuration.stages[:-1] + (replace(configuration.stages[-1], duration_s=0.5),),
+    )
+    validate_workflow_profile(with_margin, hardware=False)
+    too_short = replace(
+        configuration,
+        stages=configuration.stages[:-1] + (replace(configuration.stages[-1], duration_s=0.3),),
+    )
+    with pytest.raises(NHRValidationError, match="CSV final time cannot exceed"):
+        validate_workflow_profile(too_short, hardware=False)
     sequence = configuration.sequence(configure_limits=True)
     assert [stage.name for stage in sequence] == [
         "cccv", "rest", "cp", "csv", "post-sequence-rest"

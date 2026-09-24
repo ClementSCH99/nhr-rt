@@ -151,6 +151,9 @@ def execute_workflow_on_runtime(
     runtime_safety_failure: Callable[[Exception], bool] | None = None,
     arm_lease_supervisor: ArmLeaseSupervisor | None = None,
     external_signal_reader: Callable[[Any], tuple[float, dict[str, Any]]] | None = None,
+    early_stage_end_requested: Callable[[int], bool] | None = None,
+    early_stage_end_applied: Callable[[int], None] | None = None,
+    operator_interventions: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> WorkflowOutcome:
     """Execute an approved workflow on a service-owned runtime.
 
@@ -284,6 +287,8 @@ def execute_workflow_on_runtime(
                 arm_lease_supervisor=arm_lease_supervisor,
                 evidence_dir=output / "measurements",
                 external_signal_reader=external_signal_reader,
+                early_stage_end_requested=early_stage_end_requested,
+                early_stage_end_applied=early_stage_end_applied,
             ).run(planned_stages)
             report["sequence_result"] = to_jsonable(sequence_result)
             if sequence_result.state == RoutineState.STOPPED and stop_event.is_set():
@@ -400,6 +405,9 @@ def execute_workflow_on_runtime(
             and not report.get("stopped", False)
             and report.get("final_safe_state_verified", False)
         )
+        if operator_interventions is not None:
+            report["operator_interventions"] = operator_interventions()
+            report["operator_intervention"] = bool(report["operator_interventions"])
         report["ended_at_utc"] = datetime.now(timezone.utc)
         report["outcome"] = (
             "passed"

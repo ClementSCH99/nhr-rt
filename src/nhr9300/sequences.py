@@ -15,6 +15,7 @@ from typing import Callable, Literal, Sequence
 from .acquisition import AcquisitionCollector, AcquisitionStatistics
 from .errors import NHRRoutineError, NHRValidationError
 from .instrument import NHR9300
+from .qualification import require_disabled_inactive
 from .routines import (
     Condition,
     ExternalTerminationCondition,
@@ -129,12 +130,21 @@ class DynamicProfileStep(Step):
             if value == 0.0:
                 if active_mode is None:
                     context.instrument.disable()
+                    if context.arm_lease_supervisor is not None:
+                        context.arm_lease_supervisor.inactive_profile_point(
+                            index=point_index, value=value
+                        )
                 else:
                     # Keep the existing direction/contactors and change only
                     # the primary current or power request to zero.
-                    context.instrument.configure_setpoints(
-                        self._setpoint(0.0, mode=active_mode)
-                    )
+                    if context.arm_lease_supervisor is None:
+                        context.instrument.configure_setpoints(
+                            self._setpoint(0.0, mode=active_mode)
+                        )
+                    else:
+                        context.arm_lease_supervisor.apply_profile_point(
+                            index=point_index, value=value, mode=active_mode
+                        )
             else:
                 requested_mode = (
                     OperatingState.CHARGE if value > 0 else OperatingState.DISCHARGE
@@ -150,7 +160,12 @@ class DynamicProfileStep(Step):
                     context.instrument.read_measurement()
                     baseline = None
                     previous_actual = None
-                context.instrument.configure_setpoints(self._setpoint(value))
+                if context.arm_lease_supervisor is None:
+                    context.instrument.configure_setpoints(self._setpoint(value))
+                else:
+                    context.arm_lease_supervisor.apply_profile_point(
+                        index=point_index, value=value, mode=requested_mode
+                    )
                 active_mode = requested_mode
             context.collector.set_context(
                 context.result.routine_id,
@@ -165,6 +180,11 @@ class DynamicProfileStep(Step):
                     raise NHRRoutineError(context.collector.error)
                 context.instrument.check_interlocks()
                 measurement = context.instrument.read_measurement()
+                stage_end_requested = getattr(context, "early_stage_end_requested", None)
+                if stage_end_requested is not None and stage_end_requested():
+                    context.result.termination_reason = "operator_stage_end"
+                    context.result.termination_measurement = measurement
+                    return
                 if active_mode is not None and context.result.initial_active_measurement is None:
                     context.result.initial_active_measurement = measurement
                 for index, condition in enumerate(conditions):
@@ -217,10 +237,8 @@ class DynamicProfileStep(Step):
                     arm_lease_supervisor.checkpoint(measurement)
                 context.stop_event.wait(min(self.poll_interval_s, remaining))
 
+        context.instrument.check_interlocks()
         context.result.termination_measurement = context.instrument.read_measurement()
-        if self.termination_conditions:
-            context.result.termination_reason = "condition_timeout"
-            raise NHRRoutineError("No termination condition was reached before profile end")
         context.result.termination_reason = "profile_end"
 
 
@@ -407,6 +425,8 @@ class SequenceRunner:
         arm_lease_supervisor=None,
         evidence_dir: Path | None = None,
         external_signal_reader=None,
+        early_stage_end_requested: Callable[[int], bool] | None = None,
+        early_stage_end_applied: Callable[[int], None] | None = None,
     ) -> None:
         self.instrument = instrument
         self.collector = collector
@@ -417,6 +437,8 @@ class SequenceRunner:
         self.arm_lease_supervisor = arm_lease_supervisor
         self.evidence_dir = evidence_dir
         self.external_signal_reader = external_signal_reader
+        self.early_stage_end_requested = early_stage_end_requested
+        self.early_stage_end_applied = early_stage_end_applied
 
     def run(self, stages: Sequence[SequenceStage]) -> SequenceResult:
         if not stages:
@@ -436,11 +458,16 @@ class SequenceRunner:
                 if self.progress_callback is not None:
                     self.progress_callback(stage_index, stage, None)
                 if self.arm_lease_supervisor is not None:
+                    profile_step = next(
+                        (step for step in stage.routine.steps if isinstance(step, DynamicProfileStep)),
+                        None,
+                    )
                     self.arm_lease_supervisor.begin_stage(
                         index=stage_index,
                         name=stage.name,
                         stage_type=stage.type,
                         duration_s=stage.duration_s,
+                        profile_step=profile_step,
                     )
                 try:
                     stage_result = RoutineRunner(
@@ -458,11 +485,20 @@ class SequenceRunner:
                         failure_handler=self.failure_handler,
                         arm_lease_supervisor=self.arm_lease_supervisor,
                         external_signal_reader=self.external_signal_reader,
+                        early_stage_end_requested=(
+                            (lambda index=stage_index: self.early_stage_end_requested(index))
+                            if self.early_stage_end_requested is not None else None
+                        ),
                     ).run(stage.routine)
                 finally:
                     if self.arm_lease_supervisor is not None:
                         self.arm_lease_supervisor.end_stage()
                 result.stages.append(stage_result)
+                if stage_result.termination_reason == "operator_stage_end" and stage_result.state == RoutineState.PASSED:
+                    status = self.instrument.read_status()
+                    require_disabled_inactive(status)
+                    if self.early_stage_end_applied is not None:
+                        self.early_stage_end_applied(stage_index)
                 if stage_result.state != RoutineState.PASSED:
                     result.state = stage_result.state
                     result.reason = (

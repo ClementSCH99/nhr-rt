@@ -60,6 +60,7 @@ SERVICE_CONTRACTS = {
 }
 SERVICE_CAPABILITIES = [
     "approved_workflows",
+    "operator_stage_end",
     "external_interlocks",
     "external_snapshot_publication",
     "runtime_events",
@@ -135,6 +136,8 @@ APPROVED_WORKFLOW_ACTIONS = {
     "workflow-runs",
     "workflow-run",
     "workflow-stop",
+    "workflow-stage-end",
+    "workflow-stage-end-reason",
 }
 
 
@@ -827,6 +830,15 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
         ):
             return parts[1], "workflow-stop", parts[3]
         if (
+            versioned and len(parts) in {5, 6}
+            and parts[0] == "instruments" and parts[2] == "workflow-runs"
+            and parts[4] == "stage-end"
+        ):
+            if len(parts) == 5:
+                return parts[1], "workflow-stage-end", parts[3]
+            if parts[5] == "reason":
+                return parts[1], "workflow-stage-end-reason", parts[3]
+        if (
             versioned
             and len(parts) == 5
             and parts[0] == "instruments"
@@ -1078,6 +1090,8 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
                 "workflow-preflight",
                 "workflow-runs",
                 "workflow-stop",
+                "workflow-stage-end",
+                "workflow-stage-end-reason",
             }:
                 self._send(HTTPStatus.NOT_FOUND, {"error": "Not found"})
                 return
@@ -1132,6 +1146,22 @@ class NHRRequestHandler(BaseHTTPRequestHandler):
                         HTTPStatus.ACCEPTED if requested else HTTPStatus.OK,
                         payload,
                     )
+                    return
+                if action == "workflow-stage-end":
+                    self._require_body_fields(body, allowed={"stage_index"}, required={"stage_index"})
+                    if run_id is None or type(body["stage_index"]) is not int:
+                        raise NHRValidationError("run_id and integer stage_index are required")
+                    payload = managed.workflow_controller.request_stage_end(run_id, body["stage_index"])
+                    self._send(HTTPStatus.ACCEPTED, payload)
+                    return
+                if action == "workflow-stage-end-reason":
+                    self._require_body_fields(body, allowed={"intervention_id", "reason"}, required={"intervention_id", "reason"})
+                    if run_id is None or not isinstance(body["intervention_id"], str) or not isinstance(body["reason"], str):
+                        raise NHRValidationError("run_id, intervention_id and reason are required")
+                    payload = managed.workflow_controller.add_stage_end_reason(
+                        run_id, body["intervention_id"], body["reason"]
+                    )
+                    self._send(HTTPStatus.OK, payload)
                     return
             managed.require_allowed(action)
             with managed._lifecycle_lock:

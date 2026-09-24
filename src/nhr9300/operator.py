@@ -23,6 +23,7 @@ from urllib.request import urlopen
 from .client import NHRServiceClient
 from .diagnostics import diagnose_config
 from .evidence import atomic_write_json
+from .errors import NHRAPIError
 from .monitor import require_local_service_url
 from .workflow_registry import WorkflowBundle
 
@@ -363,6 +364,34 @@ class OperatorConsole:
             if pending.get("run_id") == result["run_id"]:
                 self.journal.unlink()
 
+    def end_stage(self) -> None:
+        """Send the stage-end request before asking the operator for context."""
+        self.verify_service()
+        run = self.client.runtime(self.args.instrument_id)["workflow"]
+        stage = run.get("stage")
+        if not run.get("active") or stage is None:
+            self.show("No active stage to end")
+            return
+        self.show(f"Ending stage {stage['index'] + 1}/{stage['count']}: {stage['name']}")
+        intervention = self.client.end_workflow_stage(
+            self.args.instrument_id, run["run_id"], stage["index"]
+        )
+        self.show("Stage-end request recorded; the service is completing the controlled transition")
+        self.display(intervention)
+        reason = self.ask("Reason (Enter keeps the recorded default): ").strip()
+        if reason:
+            try:
+                updated = self.client.explain_workflow_stage_end(
+                    self.args.instrument_id, run["run_id"],
+                    intervention["intervention_id"], reason,
+                )
+            except NHRAPIError as exc:
+                if exc.status != 409:
+                    raise
+                self.show("Evidence was already finalized; the recorded default reason remains")
+            else:
+                self.display(updated)
+
     def close_all(self) -> None:
         """Stop any run, then ask the service to release every owned resource."""
         self.verify_service()
@@ -433,7 +462,7 @@ class OperatorConsole:
         actions = {"1": self.launch, "2": lambda: self.display(diagnose_config(self.config)),
                    "3": self.select, "4": self.prepare, "5": self.preflight,
                    "6": self.start, "7": self.status, "8": self.stop, "9": self.recover,
-                   "10": self.close_all}
+                   "10": self.close_all, "11": self.end_stage}
         while True:
             self.show(
                 f"\nSelected: {self.selected or '-'}\n"
@@ -447,6 +476,7 @@ class OperatorConsole:
                 "8 Stop test and finalize\n"
                 "9 Recover request\n"
                 "10 Controlled shutdown NHR + runner-owned HMI\n"
+                "11 End current stage early, then enter reason\n"
                 "Q Leave services running"
             )
             try:

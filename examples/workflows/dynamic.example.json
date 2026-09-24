@@ -27,7 +27,8 @@
   "stages": [
     {
       "name": "dynamic-current",
-      "type": "csv_profile", "duration_s": 8.0,
+      "type": "csv_profile",
+      "duration_s": 8.0,
       "csv_path": "../profiles/current.example.csv",
       "profile_kind": "current",
       "current_a": 3.0,

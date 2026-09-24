@@ -173,7 +173,11 @@ class WaitStep(Step):
             raise NHRValidationError("Wait duration must be positive")
         if self.activation_tolerance < 0.0:
             raise NHRValidationError("Activation tolerance cannot be negative")
-        deadline = time.monotonic() + self.duration_s
+        supervisor = getattr(context, "arm_lease_supervisor", None)
+        rest_deadline = (
+            supervisor.begin_rest_wait(self.duration_s) if supervisor is not None else None
+        )
+        deadline = rest_deadline if rest_deadline is not None else time.monotonic() + self.duration_s
         latest_measurement: Measurement | None = None
         latest_compared: float | None = None
         condition_active = self.activation_condition is None
@@ -182,11 +186,18 @@ class WaitStep(Step):
         while True:
             if context.stop_event.is_set():
                 raise InterruptedError("Routine stop requested")
+            if rest_deadline is not None and time.monotonic() >= deadline:
+                break
             if context.collector.error:
                 raise NHRRoutineError(context.collector.error)
             context.instrument.check_interlocks()
             measurement = context.instrument.read_measurement()
             latest_measurement = measurement
+            stage_end_requested = getattr(context, "early_stage_end_requested", None)
+            if stage_end_requested is not None and stage_end_requested():
+                context.result.termination_reason = "operator_stage_end"
+                context.result.termination_measurement = measurement
+                return
             if self.mode in (OperatingState.CHARGE, OperatingState.DISCHARGE):
                 if context.result.initial_active_measurement is None:
                     context.result.initial_active_measurement = measurement
@@ -255,6 +266,8 @@ class WaitStep(Step):
             if arm_lease_supervisor is not None:
                 arm_lease_supervisor.checkpoint(measurement)
             context.stop_event.wait(min(self.poll_interval_s, remaining_s))
+        if rest_deadline is not None:
+            supervisor.complete_rest_wait()
         if conditions:
             context.result.termination_reason = "condition_timeout"
             first = conditions[0]
@@ -301,6 +314,7 @@ class RoutineContext:
     result: RoutineResult
     arm_lease_supervisor: Any | None = None
     external_signal_reader: Callable[[ExternalTerminationCondition], tuple[float, dict[str, Any]]] | None = None
+    early_stage_end_requested: Callable[[], bool] | None = None
 
 
 class RoutineRunner:
@@ -315,6 +329,7 @@ class RoutineRunner:
         failure_handler: Callable[[Exception], bool] | None = None,
         arm_lease_supervisor: Any | None = None,
         external_signal_reader: Callable[[ExternalTerminationCondition], tuple[float, dict[str, Any]]] | None = None,
+        early_stage_end_requested: Callable[[], bool] | None = None,
     ) -> None:
         self.instrument = instrument
         self.collector = collector
@@ -326,6 +341,7 @@ class RoutineRunner:
         self._failure_handler = failure_handler
         self._arm_lease_supervisor = arm_lease_supervisor
         self._external_signal_reader = external_signal_reader
+        self._early_stage_end_requested = early_stage_end_requested
         self._thread: threading.Thread | None = None
 
     @property
@@ -398,6 +414,7 @@ class RoutineRunner:
             result,
             self._arm_lease_supervisor,
             self._external_signal_reader,
+            self._early_stage_end_requested,
         )
         try:
             for index, step in enumerate(routine.steps):
@@ -420,6 +437,8 @@ class RoutineRunner:
                 )
             elif result.termination_reason == "duration":
                 result.reason = "Configured duration elapsed"
+            elif result.termination_reason == "operator_stage_end":
+                result.reason = "Stage ended early by operator request"
             else:
                 result.reason = "Routine completed"
         except InterruptedError as exc:

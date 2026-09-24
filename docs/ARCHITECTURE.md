@@ -87,6 +87,11 @@ User interfaces and transport adapters remain at the outside edge.
 Client loss does not stop a service-owned workflow. Start retries use the same
 request UUID to avoid duplicate runs. Stop is cooperative and asynchronous;
 `stop_requested` is not terminal evidence.
+An operator may request early completion of the exact active stage. The
+service records the request before asking for optional detail, completes
+standby/disable, verifies disabled inactive state, then advances. Run stop and safety
+faults retain priority. Reports distinguish an applied operator intervention
+from ordinary stage termination even when the run passes.
 
 ### Measurements and observability
 
@@ -160,7 +165,7 @@ The versioned API is `/api/v1`. Its endpoint families are:
 | Family | Authority |
 |---|---|
 | Configuration, inventory, status, measurement, acquisition, runtime, events, interlocks | Read-only observation |
-| Workflow list, preflight, start, run status, run stop | Registered workflow authority |
+| Workflow list, preflight, start, run status, run stop, stage end and reason | Registered workflow authority |
 | External snapshot `PUT` | Decoded data publication only; no NHR command authority |
 | Controlled service shutdown | Local lifecycle control; exact acknowledgement required; closes every service-owned instrument |
 | Connect, detach, limits, arm, command and legacy routine | Compatibility path; physical writes disabled by default |

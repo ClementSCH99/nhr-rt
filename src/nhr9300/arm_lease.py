@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import math
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -76,6 +77,8 @@ class ArmLeaseSupervisor:
         self._sequence_deadline: float | None = None
         self._stage: dict[str, Any] | None = None
         self._expected_setpoints: Setpoints | None = None
+        self._profile_step: Any | None = None
+        self._profile_index = -1
         self._events: list[dict[str, Any]] = []
         self._renewal_count = 0
         self._status = "active"
@@ -104,6 +107,7 @@ class ArmLeaseSupervisor:
         name: str,
         stage_type: str | None,
         duration_s: float | None,
+        profile_step: Any | None = None,
     ) -> None:
         """Bind renewal authority to one immutable approved stage."""
         with self._lock:
@@ -115,10 +119,12 @@ class ArmLeaseSupervisor:
                 "duration_s": duration_s,
                 "started_monotonic": started,
                 "deadline_monotonic": (
-                    None if duration_s is None else started + duration_s
+                    None if duration_s is None or stage_type == "rest" else started + duration_s
                 ),
             }
             self._expected_setpoints = None
+            self._profile_step = profile_step if stage_type == "csv_profile" else None
+            self._profile_index = -1
             self._deadline_reported = None
             if (
                 stage_type in ACTIVE_STAGE_TYPES
@@ -128,12 +134,40 @@ class ArmLeaseSupervisor:
                 self._record("stage_activated", reason="approved_active_stage")
             self._condition.notify_all()
 
+    def begin_rest_wait(self, duration_s: float) -> float | None:
+        """Start an inactive rest ceiling when its measured wait actually begins."""
+        with self._lock:
+            stage = self._stage
+            if stage is None or stage["type"] != "rest":
+                return None
+            if self._status != "active" or stage["deadline_monotonic"] is not None:
+                self._refuse("rest_wait_not_available")
+            if duration_s > float(stage["duration_s"]):
+                self._refuse("rest_wait_exceeds_approved_duration")
+            status = self.instrument.read_status()
+            if status.enabled or status.state not in (OperatingState.OFF, OperatingState.STANDBY):
+                self._refuse("rest_wait_requires_disabled_output")
+            stage["deadline_monotonic"] = self.clock() + float(stage["duration_s"])
+            self._record("rest_wait_started", reason="approved_inactive_rest")
+            self._condition.notify_all()
+            return float(stage["deadline_monotonic"])
+
+    def complete_rest_wait(self) -> None:
+        with self._lock:
+            stage = self._stage
+            if stage is None or stage["type"] != "rest" or stage["deadline_monotonic"] is None:
+                self._refuse("rest_wait_not_active")
+            self._record("rest_wait_completed", reason="approved_rest_elapsed")
+            stage["deadline_monotonic"] = None
+            self._condition.notify_all()
+
     def end_stage(self) -> None:
         with self._lock:
             if self._renewal_required(self._stage):
                 self._record("stage_completed", reason="stage_left_active_scope")
             self._stage = None
             self._expected_setpoints = None
+            self._profile_step = None
             self._deadline_reported = None
             self._condition.notify_all()
 
@@ -145,6 +179,7 @@ class ArmLeaseSupervisor:
             self._record("revoked", reason=reason)
             self._stage = None
             self._expected_setpoints = None
+            self._profile_step = None
             self._condition.notify_all()
             thread = self._deadline_thread
         if thread is not None and thread is not threading.current_thread():
@@ -172,18 +207,38 @@ class ArmLeaseSupervisor:
                 return
 
             status = self.instrument.read_status()
+            if (
+                self._profile_step is not None
+                and self._expected_setpoints is None
+                and not status.enabled
+                and status.state in (OperatingState.OFF, OperatingState.STANDBY)
+            ):
+                return
             armed_until = status.armed_until_monotonic
             if armed_until is None or now >= armed_until:
                 self._record("expired", reason="arm_lease_expired")
                 raise ArmLeaseExpiredError("Arm lease expired during approved workflow")
 
             if self._expected_setpoints is None:
+                if self._profile_step is not None:
+                    self._refuse("approved_profile_point_not_applied")
                 if status.state not in (
                     OperatingState.CHARGE,
                     OperatingState.DISCHARGE,
                 ):
                     self._refuse("stage_not_in_approved_active_state")
                 self._expected_setpoints = status.setpoints
+
+            if status.setpoints != self._expected_setpoints:
+                self._refuse("NHR setpoints changed outside the approved stage")
+
+            approved_end = min(
+                self._sequence_deadline,
+                float(stage_deadline) if stage_deadline is not None else self._sequence_deadline,
+            )
+            # A lease already valid through the approved end needs no extension.
+            if armed_until >= approved_end:
+                return
 
             if armed_until - now > self.renewal_margin_s:
                 return
@@ -228,6 +283,76 @@ class ArmLeaseSupervisor:
             if self.stop_event.is_set():
                 self._record("revoked", reason="stop_requested_after_renewal")
                 raise InterruptedError("Routine stop requested during arm renewal")
+
+    def _require_profile_point(self, index: int, value: float) -> None:
+        if self._status != "active" or self._stage is None or self._profile_step is None:
+            self._refuse("no_approved_dynamic_stage")
+        points = self._profile_step.points
+        if index != self._profile_index + 1 or index >= len(points) - 1:
+            self._refuse("dynamic_profile_point_out_of_order")
+        if value != points[index].value:
+            self._refuse("dynamic_profile_point_not_approved")
+        earliest = float(self._stage["started_monotonic"]) + points[index].time_s
+        if self.clock() + 0.2 < earliest:
+            self._refuse("dynamic_profile_point_too_early")
+        if self.stop_event.is_set():
+            self._refuse("stop_requested_during_profile_point")
+
+    def apply_profile_point(
+        self, *, index: int, value: float, mode: OperatingState
+    ) -> None:
+        """Apply only the next point of the bound, approved dynamic profile."""
+        with self._lock:
+            self._require_profile_point(index, value)
+            if value != 0.0 and mode != (
+                OperatingState.CHARGE if value > 0 else OperatingState.DISCHARGE
+            ):
+                self._refuse("dynamic_profile_direction_mismatch")
+            requested = self._profile_step._setpoint(value, mode=mode)
+            try:
+                before = self.instrument.read_status()
+                if self._expected_setpoints is not None:
+                    if before.setpoints != self._expected_setpoints:
+                        raise NHRStateError("NHR setpoints changed before approved profile point")
+                elif before.enabled or before.state not in (OperatingState.OFF, OperatingState.STANDBY):
+                    raise NHRStateError("Dynamic profile has no confirmed starting state")
+                self.instrument.configure_setpoints(requested)
+                status = self.instrument.read_status()
+                self._require_requested_readback(requested, status.setpoints)
+            except Exception as exc:
+                self._expected_setpoints = None
+                self._record("refused", reason=f"profile_point_{index}: {type(exc).__name__}: {exc}")
+                raise ArmLeaseRenewalError(
+                    f"Approved dynamic profile point {index} failed closed: {type(exc).__name__}: {exc}"
+                ) from exc
+            if self.stop_event.is_set():
+                self._refuse("stop_requested_after_profile_point")
+            self._expected_setpoints = status.setpoints
+            self._profile_index = index
+            self._record("profile_point_applied", reason="approved_profile_point", point_index=index)
+
+    def inactive_profile_point(self, *, index: int, value: float) -> None:
+        """Record an approved zero point that leaves the instrument disabled."""
+        with self._lock:
+            self._require_profile_point(index, value)
+            if value != 0.0:
+                self._refuse("nonzero_profile_point_cannot_be_inactive")
+            status = self.instrument.read_status()
+            if status.enabled or status.state not in (OperatingState.OFF, OperatingState.STANDBY):
+                self._refuse("inactive_profile_point_not_disabled")
+            self._expected_setpoints = None
+            self._profile_index = index
+            self._record("profile_point_inactive", reason="approved_zero_point", point_index=index)
+
+    @staticmethod
+    def _require_requested_readback(requested: Setpoints, observed: Setpoints) -> None:
+        # IVI does not report control_mode; compare every writable field it does report.
+        for name in ("state", "voltage_enabled", "current_enabled", "power_enabled", "resistance_enabled"):
+            if getattr(requested, name) != getattr(observed, name):
+                raise NHRStateError(f"Dynamic profile {name} readback mismatch")
+        for name in ("voltage", "current", "power", "resistance"):
+            if not math.isclose(getattr(requested, name), getattr(observed, name), rel_tol=1e-6, abs_tol=0.01):
+                raise NHRStateError(f"Dynamic profile {name} readback mismatch")
 
     def record_external_expiration(self, reason: str) -> None:
         with self._lock:

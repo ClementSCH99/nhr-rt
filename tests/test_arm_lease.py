@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from nhr9300.acquisition import AcquisitionCollector
 from nhr9300.arm_lease import (
     ArmLeaseExpiredError,
     ArmLeaseRenewalError,
@@ -18,7 +19,10 @@ from nhr9300.external_interlocks import ExternalInterlockManager, ExternalInterl
 from nhr9300.instrument import NHR9300
 from nhr9300.interlocks import StaticInterlockProvider
 from nhr9300.qualification import safety_limit_mismatches
-from nhr9300.types import OperatingState, SafetyLimits, Setpoints
+from nhr9300.routines import rest_period
+from nhr9300.sequences import DynamicProfileStep, ProfilePoint
+from nhr9300.sequences import SequenceRunner, SequenceStage
+from nhr9300.types import OperatingState, RoutineState, SafetyLimits, Setpoints
 
 
 def _limits() -> SafetyLimits:
@@ -244,3 +248,107 @@ def test_can_snapshot_faults_refuse_renewal(fault: str) -> None:
     finally:
         external.deactivate()
         _close(instrument)
+
+
+def _dynamic_runtime():
+    instrument, _, _, _, _, supervisor, _ = _active_runtime()
+    instrument.disable()
+    instrument.arm(50)
+    step = DynamicProfileStep(
+        points=(ProfilePoint(0, 2), ProfilePoint(0.3, 3), ProfilePoint(0.6, 0)),
+        kind="current", charge_voltage_limit_v=99, discharge_voltage_limit_v=80,
+        current_limit_a=10, power_limit_w=500,
+    )
+    supervisor.begin_stage(index=0, name="dynamic", stage_type="csv_profile",
+                           duration_s=1000, profile_step=step)
+    return instrument, supervisor
+
+
+def test_dynamic_profile_renews_after_approved_setpoint_change() -> None:
+    instrument, supervisor = _dynamic_runtime()
+    try:
+        supervisor.apply_profile_point(index=0, value=2, mode=OperatingState.CHARGE)
+        time.sleep(0.12)
+        supervisor.apply_profile_point(index=1, value=3, mode=OperatingState.CHARGE)
+        supervisor.checkpoint(instrument.read_measurement())
+        assert supervisor.snapshot()["renewal_count"] == 1
+        assert instrument.read_status().setpoints.current == 3
+    finally:
+        _close(instrument)
+
+
+def test_dynamic_profile_rejects_skipped_point_and_external_change() -> None:
+    instrument, supervisor = _dynamic_runtime()
+    try:
+        with pytest.raises(ArmLeaseRenewalError, match="out_of_order"):
+            supervisor.apply_profile_point(index=1, value=3, mode=OperatingState.CHARGE)
+        supervisor.apply_profile_point(index=0, value=2, mode=OperatingState.CHARGE)
+        instrument.configure_setpoints(
+            replace(instrument.read_status().setpoints, current=4)
+        )
+        time.sleep(0.12)
+        with pytest.raises(ArmLeaseRenewalError, match="changed before approved profile point"):
+            supervisor.apply_profile_point(index=1, value=3, mode=OperatingState.CHARGE)
+    finally:
+        _close(instrument)
+
+
+def test_dynamic_profile_refuses_renewal_after_unapproved_change() -> None:
+    instrument, supervisor = _dynamic_runtime()
+    try:
+        supervisor.apply_profile_point(index=0, value=2, mode=OperatingState.CHARGE)
+        instrument.configure_setpoints(replace(instrument.read_status().setpoints, current=4))
+        with pytest.raises(ArmLeaseRenewalError, match="setpoints changed"):
+            supervisor.checkpoint(instrument.read_measurement())
+        assert supervisor.snapshot()["renewal_count"] == 0
+    finally:
+        _close(instrument)
+
+
+def test_renewal_stops_once_lease_covers_approved_stage_end() -> None:
+    instrument, _, _, _, _, supervisor, measurement = _active_runtime()
+    try:
+        now = time.monotonic()
+        supervisor._stage["deadline_monotonic"] = now + 10
+        instrument._armed_until = now + 2
+        supervisor.checkpoint(measurement)
+        assert supervisor.snapshot()["renewal_count"] == 1
+        assert instrument.read_status().armed_until_monotonic >= supervisor._stage["deadline_monotonic"]
+        supervisor.checkpoint(instrument.read_measurement())
+        assert supervisor.snapshot()["renewal_count"] == 1
+    finally:
+        supervisor.close("test_complete")
+        _close(instrument)
+
+
+def test_rest_duration_begins_after_disabled_setup(tmp_path, monkeypatch) -> None:
+    instrument = NHR9300(
+        "rest-sim", SimulatedBackend("rest-sim", initial_voltage_v=90),
+        interlocks=[StaticInterlockProvider()],
+    )
+    instrument.connect()
+    collector = AcquisitionCollector(instrument, rate_hz=10, csv_path=tmp_path / "rest.csv")
+    original_disable = instrument.disable
+
+    def slow_disable() -> None:
+        time.sleep(0.25)
+        original_disable()
+
+    monkeypatch.setattr(instrument, "disable", slow_disable)
+    supervisor = ArmLeaseSupervisor(
+        run_id="rest-run", workflow_id="rest-workflow", bundle_digest="sim",
+        instrument=instrument, collector=collector, safety_limits=_limits(),
+        max_sequence_duration_s=2, stop_event=threading.Event(),
+    )
+    supervisor.start_sequence()
+    try:
+        result = SequenceRunner(
+            instrument, collector, arm_lease_supervisor=supervisor,
+        ).run((SequenceStage("rest", rest_period(name="rest", duration_s=0.3),
+                             type="rest", duration_s=0.3),))
+        assert result.state == RoutineState.PASSED, result.reason
+        decisions = [event["decision"] for event in supervisor.snapshot()["events"]]
+        assert decisions == ["rest_wait_started", "rest_wait_completed"]
+    finally:
+        supervisor.close("test_complete")
+        instrument.close()

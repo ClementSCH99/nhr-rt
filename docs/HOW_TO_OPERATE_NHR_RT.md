@@ -562,6 +562,8 @@ acquisition.
 | `preflight_workflow(...)` | Workflow control | Synchronous approved workflow preflight |
 | `start_workflow(...)` | Workflow control | Asynchronous registered workflow start |
 | `stop_workflow(id, run_id)` | Workflow control | Idempotent cooperative-stop request |
+| `end_workflow_stage(id, run_id, stage_index)` | Workflow control | Request early completion of the exact active stage |
+| `explain_workflow_stage_end(id, run_id, intervention_id, reason)` | Workflow control | Add a reason before evidence finalization |
 | `configure_limits(id, limits)` | Primitive compatibility | Programs primitive limits when policy permits |
 | `arm(id, duration_s)` | Primitive compatibility | Creates a bounded primitive arm lease |
 | `command(id, name, **kwargs)` | Primitive compatibility | Sends a typed primitive command when permitted |
@@ -1373,6 +1375,22 @@ Typical sequence:
 6. observe status, request cooperative stop when needed, and wait for terminal
    finalization;
 7. recover the request journal before starting another run.
+
+Action `11 End current stage early` sends the request immediately, then asks
+for a short reason. It applies to the displayed active measurement step only.
+The service completes the stage's standby/disable steps and verifies the
+output is disabled in an inactive state before starting the next stage. Acquisition continues through the
+remaining sequence, including rest. The request does not bypass interlocks or
+replace the independent bench stop. A transition failure fails the run rather
+than starting the next stage.
+
+The reason prompt can be left blank; the request already contains the durable
+default reason `Operator requested early stage end`. A detailed reason must be
+sent before the report is finalized. The run can finish as `passed`, while
+`operator_intervention` and `operator_interventions` in the report and run
+snapshot identify the early completion, whether it was applied, and its reason.
+If a request arrives after the active step has ended, it is marked
+`not_applied`; it never affects the next stage.
 
 The runner rejects `--instrument-id` before showing the menu unless the exact
 ID is present in the selected configuration. Action `10` is distinct from

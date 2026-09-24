@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import threading
 import time
@@ -407,6 +408,7 @@ class WorkflowRunController:
                 },
                 "stop_requested": False,
                 "stop_cause": None,
+                "operator_interventions": [],
                 "emergency_fallback_requested": False,
                 "arm_lease": {"enabled": False},
                 "report_path": str((self._run_dir(run_id) / "report.json").resolve()),
@@ -581,6 +583,9 @@ class WorkflowRunController:
                     runtime_safety_failure=self.handle_runtime_failure,
                     arm_lease_supervisor=supervisor,
                     external_signal_reader=self.external_interlocks.read_termination_signal,
+                    early_stage_end_requested=lambda index: self._stage_end_requested(run_id, index),
+                    early_stage_end_applied=lambda index: self._stage_end_applied(run_id, index),
+                    operator_interventions=lambda: self._stage_end_evidence(run_id),
                 )
             report = json.loads(outcome.report_path.read_text(encoding="utf-8"))
             sequence = report.get("sequence_result", {})
@@ -866,6 +871,86 @@ class WorkflowRunController:
                 self._stop_monitors[run_id] = monitor
                 monitor.start()
             return self._public(run), first_request
+
+    def request_stage_end(self, run_id: str, stage_index: int) -> dict[str, Any]:
+        """Request early completion of the exact active stage, without stopping the run."""
+        with self._state_lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                raise NHRValidationError(f"Unknown workflow run: {run_id}")
+            if run["state"] in TERMINAL_STATES or run["stop_requested"] or run.get("_interventions_frozen"):
+                raise NHRStateError("Workflow is no longer accepting stage-end requests")
+            for item in run["operator_interventions"]:
+                if item["stage_index"] == stage_index:
+                    return copy.deepcopy(item)
+            stage = run.get("stage")
+            step = run.get("step") or ""
+            if (run["state"] != "running" or stage is None
+                    or stage["index"] != stage_index
+                    or not (step.endswith("_wait") or step.endswith("_dynamic_profile"))):
+                raise NHRStateError("Expected stage is not in its active measurement step")
+            item = {
+                "intervention_id": str(uuid.uuid4()),
+                "stage_index": stage_index,
+                "stage_name": stage["name"],
+                "requested_at_utc": _utc_now(),
+                "applied_at_utc": None,
+                "status": "requested",
+                "reason": "Operator requested early stage end",
+                "reason_detail": None,
+            }
+            run["operator_interventions"].append(item)
+            self._persist(run_id)
+            return copy.deepcopy(item)
+
+    def add_stage_end_reason(self, run_id: str, intervention_id: str, reason: str) -> dict[str, Any]:
+        detail = reason.strip()
+        if not detail or len(detail) > 500:
+            raise NHRValidationError("Stage-end reason must contain 1 to 500 characters")
+        with self._state_lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                raise NHRValidationError(f"Unknown workflow run: {run_id}")
+            if run.get("_interventions_frozen") or run["state"] in TERMINAL_STATES:
+                raise NHRStateError("Workflow evidence is already finalized")
+            for item in run["operator_interventions"]:
+                if item["intervention_id"] == intervention_id:
+                    if item["reason_detail"] is not None:
+                        if item["reason_detail"] != detail:
+                            raise NHRStateError("Stage-end reason was already recorded")
+                        return copy.deepcopy(item)
+                    item["reason_detail"] = detail
+                    self._persist(run_id)
+                    return copy.deepcopy(item)
+            raise NHRValidationError(f"Unknown operator intervention: {intervention_id}")
+
+    def _stage_end_requested(self, run_id: str, stage_index: int) -> bool:
+        with self._state_lock:
+            run = self._runs[run_id]
+            return not run["stop_requested"] and any(
+                item["stage_index"] == stage_index and item["status"] == "requested"
+                for item in run["operator_interventions"]
+            )
+
+    def _stage_end_applied(self, run_id: str, stage_index: int) -> None:
+        with self._state_lock:
+            run = self._runs[run_id]
+            for item in run["operator_interventions"]:
+                if item["stage_index"] == stage_index and item["status"] == "requested":
+                    item["status"] = "applied"
+                    item["applied_at_utc"] = _utc_now()
+                    self._persist(run_id)
+                    return
+
+    def _stage_end_evidence(self, run_id: str) -> list[dict[str, Any]]:
+        with self._state_lock:
+            run = self._runs[run_id]
+            for item in run["operator_interventions"]:
+                if item["status"] == "requested":
+                    item["status"] = "not_applied"
+            run["_interventions_frozen"] = True
+            self._persist(run_id)
+            return copy.deepcopy(run["operator_interventions"])
 
     def _enforce_stop_timeout(self, run_id: str, timeout_s: float) -> None:
         thread = self._threads[run_id]

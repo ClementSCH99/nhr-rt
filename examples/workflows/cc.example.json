@@ -24,21 +24,24 @@
     "approved": false,
     "profile_name": "UNAPPROVED CC workflow"
   },
-  "stages": [{
-    "name": "constant-current",
-    "type": "constant_current",
-    "duration_s": 30.0,
-    "mode": "charge",
-    "current_a": 2.0,
-    "voltage_v": 95.0,
-    "power_w": 250.0,
-    "voltage_limit_enabled": true,
-    "current_limit_enabled": true,
-    "power_limit_enabled": false,
-    "termination": {
-      "field": "voltage",
-      "operator": ">=",
-      "value": 94.0,
-      "relative": false}
-  }]
+  "stages": [
+    {
+      "name": "constant-current",
+      "type": "constant_current",
+      "duration_s": 30.0,
+      "mode": "charge",
+      "current_a": 2.0,
+      "voltage_v": 95.0,
+      "power_w": 250.0,
+      "voltage_limit_enabled": true,
+      "current_limit_enabled": true,
+      "power_limit_enabled": false,
+      "termination": {
+        "field": "voltage",
+        "operator": ">=",
+        "value": 94.0,
+        "relative": false
+      }
+    }
+  ]
 }

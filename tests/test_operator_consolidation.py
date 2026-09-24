@@ -326,8 +326,33 @@ def test_operator_menu_displays_one_action_per_line(service):
         "8 Stop test and finalize",
         "9 Recover request",
         "10 Controlled shutdown NHR + runner-owned HMI",
+        "11 End current stage early, then enter reason",
         "Q Leave services running",
     ]
+
+
+def test_operator_requests_stage_end_before_prompting_for_reason(service):
+    operator = console(service)
+    calls = []
+    operator.verify_service = lambda: {}
+
+    class StageClient:
+        def runtime(self, instrument_id):
+            return {"workflow": {"active": True, "run_id": "run-1",
+                                 "stage": {"index": 0, "count": 2, "name": "discharge"}}}
+
+        def end_workflow_stage(self, instrument_id, run_id, stage_index):
+            calls.append("request")
+            return {"intervention_id": "intervention-1", "status": "requested"}
+
+        def explain_workflow_stage_end(self, instrument_id, run_id, intervention_id, reason):
+            calls.append(("reason", reason))
+            return {"reason_detail": reason}
+
+    operator.client = StageClient()
+    operator.ask = lambda prompt: (calls.append("prompt") or "Cooling absent")
+    operator.end_stage()
+    assert calls == ["request", "prompt", ("reason", "Cooling absent")]
 
 
 def test_template_library_remains_unapproved():
