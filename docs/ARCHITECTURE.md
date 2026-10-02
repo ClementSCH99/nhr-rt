@@ -52,7 +52,8 @@ there is no hot reload.
 | `backends.simulator` | Deterministic software backend with profile-controlled initial voltage. It validates logic, not physical behavior. |
 | `instrument` | Central safety facade and the only backend caller. It serializes access and converges failures toward a disabled state. |
 | `interlocks`, `external_interlocks` | Composable local interlocks plus strict timestamped external rules. Missing, unhealthy, invalid, stale or out-of-order required data fails closed. |
-| `arm_lease` | Service-owned, bounded authority for long active stages. Renewal depends on fresh acquisition, unchanged limits/setpoints, watchdog and safe interlocks. |
+| `dynamic_control` | Workflow-owned SoP operating power ceiling from fresh directional BMS values; it can only reduce approved stage/workflow/NHR limits and has no safety-threshold authority. |
+| `arm_lease` | Service-owned, bounded authority for long active stages. Renewal depends on fresh acquisition, unchanged approved limits and non-power setpoints, watchdog and safe interlocks; approved SoP power reductions are checked and read back. |
 | `acquisition`, `sinks` | Timed measurement collection, SSE publication and CSV persistence. Sinks cannot access hardware. |
 | `routines` | Small safety-aware execution primitives and CC/CP/rest factories. |
 | `profiles`, `cc_profiles`, `sequences` | Parse JSON/CSV into typed, validated workflows; compose CCCV, dynamic profiles and ordered stages; compute directional totals. |
@@ -129,6 +130,19 @@ requires a runtime interlock on the same source, signal and unit with a
 strictly more extreme threshold. Missing, unhealthy or stale data cannot be
 reported as a normal stage completion.
 
+An approved workflow may also enable 1 Hz SoP control. The service normalizes
+the BMS charge/discharge values to positive watts, then applies the minimum of
+fresh SoP and the approved stage, workflow and NHR power ceilings without
+changing the stage's primary regulation mode or safety limits. Invalid, lost,
+zero or persistently low SoP disables output and routes the run to its final
+rest. This operating constraint cannot clear or replace a safety interlock.
+
+For static active stages, an unmet termination condition at `duration_s` also
+routes to final rest with a `stopped` outcome. A CSV stage can end normally on a
+condition or at the last CSV timestamp (`profile_end`); `duration_s` is a
+separate upper bound if the CSV has not completed. Conditions and profile end
+continue to the next configured stage.
+
 ## Safety invariants
 
 - Hardware workflows require an approved exact bundle, resource and serial,
@@ -153,10 +167,11 @@ capped at 8 hours and sequences at 12 hours. These are absolute ceilings, not
 recommended defaults.
 
 An approved workflow may request `post_sequence_rest_s`. The engine appends a
-named inactive rest only after every configured stage passes. This relaxation
-period remains inside the workflow duration ceiling and live safety monitoring,
-and becomes part of the sequence and canonical run evidence. It never delays a
-stop or failure path.
+named inactive rest after all configured stages pass. A controlled SoP or
+duration stop skips intervening stages and runs that same final rest after
+output is disabled. The rest remains inside the workflow duration ceiling and
+live safety monitoring, and becomes part of the sequence and canonical run
+evidence. Operator stops and failures do not wait for it.
 
 ## Public service boundary
 

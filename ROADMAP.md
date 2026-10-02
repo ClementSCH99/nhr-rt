@@ -1,10 +1,10 @@
 # NHR Remote Testing roadmap
 
-**Last updated:** October 1, 2026
+**Last updated:** October 2, 2026
 
 **Current release:** v0.2.0
 
-**Current phase:** Milestone 6 software complete; physical validation pending
+**Current phase:** Milestone 6 on `main`; supervised SoP observations recorded, Milestone 7 open
 
 **Target release:** v0.3.0
 
@@ -17,15 +17,16 @@ an unapproved example catalogue. See the
 This work is limited to NHR-RT; CAN-PY automatic finalization/merge remains a
 separate integration dependency. M1-M5 software is implemented; physical
 acceptance remains limited to the documented configurations/campaigns below.
-M6 software is validated on the development branch. Its CAN/BMS and NHR
-physical qualification remains open. Operator acceptance, M6 physical testing
-and M7 integrated release validation are separate gates.
+M6 is implemented on `main` at `a3a0aa1` and passed the 32-bit software suite
+(238 passed, 2 hardware-gated skips). Supervised CAN/BMS and NHR runs show SoP
+power-ceiling changes and a BMS-triggered normal termination; their exact scope
+and limitations are indexed in [VALIDATION.md](docs/VALIDATION.md). Full M7
+integrated release qualification remains a separate gate.
 
 ## Product direction
 
 Milestones 1–4 and their Expansion Phase 2 validation campaign are complete for
-the exact reviewed configurations. Operator consolidation and its acceptance
-exercise now precede M6. The
+the exact reviewed configurations. Operator consolidation preceded M6. The
 [software-only operator exercise](examples/operator-simulation/README.md)
 remains available; neither track extends physical authority or replaces the
 Milestone 5–7 gates below.
@@ -38,10 +39,11 @@ behavior and the selected physical workflows were validated through Session 5.
 Expansion Phase 2 makes those capabilities safely usable by 64-bit
 applications. Milestones 1–4 established remote orchestration and the read-only
 operator interface without moving hardware authority outside `nhr-rt`.
-Milestone 5 implements the external-safety contract in software. Its real
-CAN/BMS and physical-stop validation remains gated. Milestone 6 adds an
-optional workflow-owned SoP operating ceiling in software; physical SoP timing
-and Milestone 7 release validation remain open.
+Milestone 5 implements the external-safety contract in software. Its full
+physical fault-response qualification remains open. Milestone 6 adds an
+optional workflow-owned SoP operating ceiling; supervised bench runs have
+observed its effect, while physical response-time qualification and Milestone 7
+release validation remain open.
 
 The target system uses shared authority rather than one universal master:
 

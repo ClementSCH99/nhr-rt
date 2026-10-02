@@ -5,18 +5,18 @@ historical evidence. A result applies only to the exact software revision,
 instrument, DUT, profile and conditions named by its evidence. `PASS` in one
 row never authorizes another physical run.
 
-## Current status
+## Current status — 2026-10-02
 
 | Capability | Software / simulator | Physical evidence | Status / next gap |
 |---|---|---|---|
 | Typed facade, acquisition, workflow engine and evidence | Complete regression coverage; latest operator-consolidation baseline was 180 passed, 2 hardware tests skipped | Sessions 2-5 and 2026-08-19 refactor acceptance on NHR 79503 | Accepted within archived scope |
 | Service authority and registered remote workflows | Milestones 1-4 plus operator runner covered in separate 32/64-bit processes | Phase 2 Tiers P/N/E on NHR 79503 | Accepted within exact archived configurations |
 | Read-only runtime, SSE and monitor | Snapshot, queue-gap, reconnect, UI/error/stale-state and no-write coverage | Observed during Phase 2 campaign | Accepted as read-only; not a safety heartbeat |
-| Finalized per-run recording | Normal, stop, failure, write failure, detached observer and repeated-run coverage | No dedicated new physical campaign after delivery | Software accepted; physical evidence workflow to be exercised on next approved run |
-| External fail-closed interlocks | Snapshot validation, freshness, latching, controlled stop and fallback covered | No real CAN/BMS or sensor-chain validation | Software accepted; physical integration open |
-| Multiple normal stage terminations | Ordered NHR/BMS conditions, critical-interlock precedence, measured rest and finalized service evidence covered in simulation | No physical threshold or sensor-chain validation | Software accepted; physical profile review open |
-| CAN-PY public integration | 64-bit publisher, retry/idempotence, capability discovery and lifecycle contract covered | No real CAN traffic or combined physical evidence | Boundary ready; end-to-end integration open |
-| Dynamic SoP envelope | Implemented on `dev`; focused simulator tests cover limiting, restoration, zero, low and stale exits across CC, CCCV, CP and CSV modes | Not tested with a real BMS or NHR SoP updates | Software validation passed; physical qualification open |
+| Finalized per-run recording | Normal, stop, failure, write failure, detached observer and repeated-run coverage | Run `434550a0` has a finalized manifest and verified report/CSV hashes | Software accepted; exact physical evidence recorded below |
+| External fail-closed interlocks | Snapshot validation, freshness, latching, controlled stop and fallback covered | Real BMS snapshots and safe interlock evaluation observed; unsafe/stale fault response remains unqualified | Software accepted; full physical fault-response qualification open |
+| Multiple normal stage terminations | Ordered NHR/BMS conditions, critical-interlock precedence, measured rest and finalized service evidence covered in simulation | Run `434550a0` ended its active stage on `MinCellVolt` | Software accepted; exact threshold and DUT scope below |
+| CAN-PY public integration | 64-bit publisher, retry/idempotence, capability discovery and lifecycle contract covered | Real decoded BMS values reached NHR-RT; no combined CAN/NHR physical evidence reviewed here | Boundary exercised; end-to-end integration open |
+| Dynamic SoP envelope | On `main` at `a3a0aa1`; 238 tests passed, 2 hardware-gated skips | Runs `18700921` and `50890ea5` record real charge/discharge SoP reductions but ended on earlier faults; run `434550a0` reached a safe final state without SoP reduction | Supervised behavior observed; timing and complete physical qualification open |
 | v0.3.0 integrated release | Partial inputs above | Not qualified as a complete release | Planned Milestone 7 |
 
 The two routinely skipped tests are hardware-gated. A software suite reported
@@ -47,6 +47,32 @@ same-signal `batteryVoltage` interlock were corrected. This does not establish
 real BMS scaling, physical 1 Hz response or DUT approval. Its hardware registry
 entry is prepared with the matching digest and `approved: false`; it is not
 selectable for a physical run until separately approved and reloaded.
+
+On 2026-10-02, `a3a0aa1` was fast-forwarded from `dev` to `main` and
+`origin/main`. The complete 32-bit suite passed **238 tests, 2 hardware-gated
+skips** from the `main` checkout. No approved workflow JSON or registry entry
+changed in that commit.
+
+### M6 supervised bench observations — 2026-10-02
+
+The following reports are under
+`C:\nhr-rt-runs\ModuleTests\workflow-runs\<run_id>` on the test host. All use
+NHR resource `DC PM 1`. The two discharge runs use workflow
+`mod-dch-3c-sop-v1` and bundle digest
+`sha256:ba3b1e97f5b74b8d3e727c78dcd2bfa9b07b36a7aa9318e2283a4642d4a1ff6c`.
+The operator reports observing SoP limiting in additional supervised tests;
+only the run IDs below were checked for this record.
+
+| Run ID | Observed behavior | Outcome and limit of evidence |
+|---|---|---|
+| `18700921-2096-4ebd-ac2c-b425643f66e7` | Charge workflow `full-cha-sop-mod-v1` recorded 19 SoP reductions below its 3.5 kW approved ceiling; applied values reached 2.3125 kW. | This earlier run ended `failed` on arm-lease expiration; final safe state was verified. It demonstrates physical charge-limit updates, not a completed charge workflow. |
+| `50890ea5-9ab1-478a-bc17-571cdb717fc6` | `MaxDischargePower` reduced the applied NHR power ceiling below the 20 kW approved stage ceiling in 25 recorded updates, down to 62.5 W. Two low 1 Hz cycles requested terminal rest. | This earlier run ended `failed` because the NHR disabled-state readback was `OFF` rather than the then-required `STANDBY`; final safe state was verified. It demonstrates physical setpoint limiting, not a successful final-rest transition. |
+| `434550a0-1ea1-4a67-a4df-2a5df339c021` | Fresh BMS SoP was 48.56 kW at initial application, so the NHR ceiling stayed at 20 kW. The active stage ended normally on BMS `MinCellVolt = 2.743 V`; output was disabled and final safe state verified. All six manifest file hashes and sizes were checked. | An operator stop interrupted the planned 1,800 s rest after about 36 s. This run does not test a reduced SoP ceiling, a low-SoP terminal rest or a duration stop. BMS publication became stale after the stop during finalization. |
+
+These observations and the operator's assessment show M6 operating in the
+supervised setup named above. They do not independently establish a 1 Hz physical
+response bound, rapid-fall tracking, the repaired low-SoP final-rest path on
+hardware, or completion of the M7 integrated release protocol.
 
 The current implementation has passed software, simulator and supervised NHR
 tests for read-only acquisition, safety primitives, watchdog loss, CC, CCCV,
@@ -308,7 +334,7 @@ The complete 32-bit software suite on 2026-09-22 passed with **198 passed,
 parsing and profile-schema validation with approval flags overridden in memory
 only; no example was approved or physically executed.
 
-## Planned validation
+## Current and planned validation
 
 ### Milestone 6 — dynamic SoP envelope
 
@@ -318,7 +344,7 @@ NHR safety limit and fresh directional BMS SoP. Approved NHR safety limits are
 never rewritten. The shared external numeric reader can serve later BMS-based
 charge stages without giving the BMS direct instrument authority.
 
-The software acceptance checks are:
+The completed software acceptance checks cover:
 
 - rising, falling, missing, invalid and stale SoP in the simulator;
 - applied setpoints never exceeding workflow, hardware or external ceilings;
@@ -328,11 +354,11 @@ The software acceptance checks are:
   when required SoP is unavailable, zero or persistently below its minimum;
 - source, requested, approved and applied power values for material changes.
 
-Physical status remains `NOT TESTED`. It requires separately reviewed signals,
-units, timestamps, cadence, thresholds, profiles, stop timing and immediate
-per-run authorization. The simulator does not prove that IVI `SetState` can
-accept 1 Hz power-channel updates without a state/contact cycling effect or
-that actual output power tracks a rapidly falling BMS ceiling within 1 s.
+Supervised physical observations are recorded above. Their scope is the exact
+reviewed signal mapping, profile, limits, DUT and operator setup; they do not
+qualify a general 1 Hz physical response guarantee. A separate timing review
+must measure NHR write/readback latency, state/contact behavior and actual
+output tracking during a rapidly falling BMS ceiling.
 
 ### Milestone 7 — integrated validation and v0.3.0
 

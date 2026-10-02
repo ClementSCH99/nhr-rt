@@ -1585,8 +1585,9 @@ merge is implied.
   record.
 - Primitive compatibility control is a migration flag, not access control.
 - The localhost service and monitor have no network authentication boundary.
-- M6 SoP limiting is software/simulator validated only until a separately
-  authorized NHR/BMS timing and physical-output campaign is completed.
+- Supervised NHR/BMS runs have shown M6 SoP setpoint reductions, but the
+  physical 1 Hz response time, rapid-fall tracking and full M7 release gates
+  are not yet qualified. See the exact run evidence in `VALIDATION.md`.
 
 Use [Architecture and design](ARCHITECTURE.md) for ownership and rationale,
 [Validation status and plan](VALIDATION.md) for evidence boundaries and future

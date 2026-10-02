@@ -6,9 +6,9 @@ permission to energize. Copy a template into your reviewed local profile area.
 
 | Template | Use case / stop condition | Specific review points |
 |---|---|---|
-| `cc.example.json` | Constant current until voltage condition, bounded by timeout | Direction, A, V boundary, W ceiling, condition polarity |
-| `cccv.example.json` | CCCV charge; current cutoff after voltage activation | CC current, CV voltage, cutoff current, timeout, power channel policy |
-| `constant_power.example.json` | Constant power until its voltage condition, bounded by timeout | W request, A and V constraints, direction and condition polarity |
+| `cc.example.json` | Constant current until voltage condition; unmet condition at maximum duration leads to final rest | Direction, A, V boundary, W ceiling, condition polarity |
+| `cccv.example.json` | CCCV charge; current cutoff after voltage activation; maximum duration leads to final rest | CC current, CV voltage, cutoff current, power channel policy |
+| `constant_power.example.json` | Constant power until voltage condition; unmet condition at maximum duration leads to final rest | W request, A and V constraints, direction and condition polarity |
 | `rest.example.json` | Disabled-output rest and observation for duration | Duration and applicability of the initial/final safe-state procedure |
 | `sequence.example.json` | CCCV, rest, CP discharge and optional final relaxation | Each stage, post-sequence rest and maximum sequence duration |
 | `dynamic.example.json` | Signed current/power CSV profiles and rest | CSV time seconds, signed A/W values, direction changes, voltage boundaries |
