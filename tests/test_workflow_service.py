@@ -7,6 +7,8 @@ import subprocess
 import threading
 import time
 import uuid
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,7 @@ import nhr9300.workflow_runs as workflow_runs_module
 from nhr9300.client import NHRServiceClient
 from nhr9300.errors import NHRError, NHRPolicyError
 from nhr9300.service import build_server
+from nhr9300.types import OperatingState
 from nhr9300.workflow_registry import WorkflowBundle, WorkflowRegistry
 from nhr9300.workflow_runs import WORKFLOW_ACKNOWLEDGEMENT
 
@@ -264,7 +267,7 @@ def test_invalid_workflow_limits_do_not_abort_registry_startup(tmp_path) -> None
 
 
 def test_bundle_digest_covers_referenced_dynamic_csv_bytes(tmp_path) -> None:
-    profile = _profile(tmp_path / "workflow.json")
+    profile = _profile(tmp_path / "workflow.json", post_sequence_rest_s=0.1)
     data = json.loads(profile.read_text(encoding="utf-8"))
     data["stages"] = [
         {
@@ -397,6 +400,55 @@ def test_approved_workflow_api_preflights_runs_and_is_idempotent(tmp_path) -> No
         manager.close()
         server.server_close()
 
+
+def test_sop_csv_changes_keep_approved_point_authority(tmp_path) -> None:
+    profile = _sop_profile(tmp_path / "workflow.json", duration_s=2.5)
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    data["workflow_limits"]["arm_lease_renewal_enabled"] = True
+    stage = data["stages"][0]
+    stage.update(type="csv_profile", csv_path="profile.csv", profile_kind="current",
+                 charge_voltage_limit_v=100, discharge_voltage_limit_v=80)
+    stage.pop("mode")
+    stage.pop("voltage_v")
+    (tmp_path / "profile.csv").write_text(
+        "time_s,current_a\n0,4\n1.5,4\n2.5,0\n", encoding="utf-8"
+    )
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    config = _config(tmp_path, profile)
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        _publish_sop(client, 1, 200.0)
+        run = client.start_workflow(
+            "sim-remote", request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+        )
+        controller = manager.get("sim-remote").workflow_controller
+        assert controller is not None
+        deadline = time.monotonic() + 5
+        while controller.active_sop_limit() is None:
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        _publish_sop(client, 2, 100.0)
+        final = client.wait_workflow("sim-remote", run["run_id"], timeout_s=10,
+                                     poll_interval_s=0.05)
+        assert final["state"] == "passed", final
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        decisions = report["arm_lease"]["events"]
+        assert [event["point_index"] for event in decisions
+                if event["decision"] == "profile_point_applied"] == [0, 1]
+        assert any(event["decision"] == "sop_limit_applied" and
+                   event["applied_power_w"] == 100.0 for event in decisions)
+        assert report["sop_control"]["fault"] is None
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        manager.close()
+        server.server_close()
 
 def test_post_sequence_rest_is_recorded_in_sequence_and_own_stage(tmp_path) -> None:
     profile = _profile(
@@ -906,7 +958,7 @@ def test_approved_duration_overrun_uses_controlled_then_emergency_stop(
     monkeypatch.setattr(
         routines_module.WaitStep,
         "execute",
-        lambda self, context: time.sleep(0.5),
+        lambda self, context: time.sleep(2.0),
     )
     server, manager = build_server(config, port=0, announce=False)
     managed = manager.get("sim-remote")
@@ -1098,5 +1150,555 @@ def test_actual_lease_expiration_requests_immediate_emergency_stop(
     finally:
         server.shutdown()
         thread.join()
+        manager.close()
+        server.server_close()
+
+
+def _sop_profile(path: Path, *, duration_s: float = 3.0) -> Path:
+    _profile(path, post_sequence_rest_s=0.2)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["sop_control"] = {
+        "source_id": "bms-main", "charge_signal": "charge_sop_w",
+        "discharge_signal": "discharge_sop_w", "max_age_s": 5.0,
+        "min_charge_w": 50.0, "min_discharge_w": 50.0, "low_cycles": 2,
+    }
+    data["stages"] = [
+        {"name": "charge", "type": "constant_current", "duration_s": duration_s,
+         "mode": "charge", "current_a": 5, "voltage_v": 100, "power_w": 500,
+         "voltage_limit_enabled": True, "current_limit_enabled": True,
+         "power_limit_enabled": True},
+        {"name": "later", "type": "rest", "duration_s": 0.2},
+    ]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def _publish_sop(client: NHRServiceClient, sequence: int, charge_w: float) -> None:
+    client.submit_external_snapshot(
+        "sim-remote", "bms-main", sequence=sequence,
+        timestamp_utc=datetime.now(timezone.utc).isoformat(), health="ok",
+        signals={"charge_sop_w": charge_w, "discharge_sop_w": 300.0},
+    )
+
+
+def test_sop_zero_jumps_to_final_rest_and_records_stopped_outcome(tmp_path) -> None:
+    profile = _sop_profile(tmp_path / "workflow.json")
+    config = _config(tmp_path, profile)
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        _publish_sop(client, 1, 300.0)
+        run = client.start_workflow(
+            "sim-remote", request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+        )
+        deadline = time.monotonic() + 5
+        instrument = manager.get("sim-remote").instrument
+        while not instrument.connected or instrument.read_status().state.name != "CHARGE":
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        _publish_sop(client, 2, 0.0)
+        final = client.wait_workflow("sim-remote", run["run_id"], timeout_s=10,
+                                     poll_interval_s=0.05)
+        assert final["state"] == "stopped"
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        assert report["outcome"] == "stopped"
+        assert report["final_safe_state_verified"] is True
+        assert report["sop_control"]["fault"]["reason"] == "sop_zero_or_negative"
+        assert final["stop_cause"]["origin"] == "sop_control"
+        assert report["sequence_result"]["skipped_stages"] == ["later"]
+        assert len(report["sequence_result"]["stages"]) == 2
+        assert report["sequence_result"]["stages"][-1]["state"] == "passed"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        manager.close()
+        server.server_close()
+
+
+def test_sop_zero_blocks_start_before_output_can_be_enabled(tmp_path) -> None:
+    profile = _sop_profile(tmp_path / "workflow.json")
+    config = _config(tmp_path, profile)
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        _publish_sop(client, 1, 0.0)
+        with pytest.raises(NHRError, match="sop_zero_or_negative"):
+            client.start_workflow(
+                "sim-remote", request_id=str(uuid.uuid4()),
+                workflow_id="approved-rest-v1",
+                bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+            )
+        assert manager.get("sim-remote").instrument.connected is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        manager.close()
+        server.server_close()
+
+
+def test_sop_caps_current_mode_in_simulator(tmp_path) -> None:
+    profile = _sop_profile(tmp_path / "workflow.json", duration_s=1.3)
+    config = _config(tmp_path, profile)
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        _publish_sop(client, 1, 100.0)
+        run = client.start_workflow(
+            "sim-remote", request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+        )
+        final = client.wait_workflow("sim-remote", run["run_id"], timeout_s=10,
+                                     poll_interval_s=0.05)
+        assert final["state"] == "passed"
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        applied = [event for event in report["sop_control"]["events"]
+                   if event["kind"] == "limit_applied"]
+        assert applied and applied[0]["applied_power_w"] == 100.0
+        with Path(report["sequence_result"]["global_csv_path"]).open(
+            encoding="utf-8", newline=""
+        ) as handle:
+            samples = [row for row in csv.DictReader(handle) if row["state"] == "charge"]
+        assert samples
+        assert max(float(row["power_w"]) for row in samples) <= 100.01
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        manager.close()
+        server.server_close()
+
+
+def test_sop_profile_requires_terminal_rest_and_power_channel(tmp_path) -> None:
+    profile = _sop_profile(tmp_path / "workflow.json")
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    data["workflow_limits"]["post_sequence_rest_s"] = 0
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(NHRError, match="post_sequence_rest_s"):
+        WorkflowBundle.load(profile, hardware=False)
+    data["workflow_limits"]["post_sequence_rest_s"] = 0.2
+    data["stages"][0]["power_limit_enabled"] = False
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(NHRError, match="power_limit_enabled"):
+        WorkflowBundle.load(profile, hardware=False)
+
+
+def test_sop_reduction_and_restoration_stay_within_approved_ceiling(tmp_path) -> None:
+    profile = _sop_profile(tmp_path / "workflow.json", duration_s=4.5)
+    config = _config(tmp_path, profile)
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        _publish_sop(client, 1, 200.0)
+        run = client.start_workflow(
+            "sim-remote", request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+        )
+        controller = manager.get("sim-remote").workflow_controller
+        assert controller is not None
+
+        def wait_limit(expected: float) -> None:
+            deadline = time.monotonic() + 3
+            while True:
+                current = controller.active_sop_limit()
+                if current is not None and current["applied_w"] == expected:
+                    return
+                assert time.monotonic() < deadline
+                time.sleep(0.02)
+
+        wait_limit(200.0)
+        _publish_sop(client, 2, 100.0)
+        wait_limit(100.0)
+        _publish_sop(client, 3, 700.0)
+        wait_limit(500.0)
+        final = client.wait_workflow("sim-remote", run["run_id"], timeout_s=10,
+                                     poll_interval_s=0.05)
+        assert final["state"] == "passed"
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        applied = [event["applied_power_w"] for event in report["sop_control"]["events"]
+                   if event["kind"] == "limit_applied"]
+        assert applied[:3] == [200.0, 100.0, 500.0]
+        assert report["sop_control"]["fault"] is None
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        manager.close()
+        server.server_close()
+
+
+@pytest.mark.parametrize("stage_type", ["cccv", "constant_power", "csv_profile"])
+def test_sop_caps_other_regulation_modes(tmp_path, stage_type: str) -> None:
+    profile = _sop_profile(tmp_path / "workflow.json", duration_s=1.2)
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    stage = data["stages"][0]
+    stage["type"] = stage_type
+    if stage_type == "cccv":
+        stage["voltage_v"] = 90
+        stage["cutoff_current_a"] = 1.2
+    elif stage_type == "csv_profile":
+        stage.pop("mode")
+        stage.pop("voltage_v")
+        stage["csv_path"] = "profile.csv"
+        stage["profile_kind"] = "current"
+        stage["charge_voltage_limit_v"] = 100
+        stage["discharge_voltage_limit_v"] = 80
+        (tmp_path / "profile.csv").write_text(
+            "time_s,current_a\n0,4\n1.2,0\n", encoding="utf-8"
+        )
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    config = _config(tmp_path, profile)
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        source_limit = 700.0 if stage_type == "cccv" else 100.0
+        _publish_sop(client, 1, source_limit)
+        run = client.start_workflow(
+            "sim-remote", request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+        )
+        final = client.wait_workflow("sim-remote", run["run_id"], timeout_s=10,
+                                     poll_interval_s=0.05)
+        assert final["state"] == "passed"
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        events = [event for event in report["sop_control"]["events"]
+                  if event["kind"] == "limit_applied"]
+        expected_limit = 500.0 if stage_type == "cccv" else 100.0
+        assert events and events[0]["applied_power_w"] == expected_limit
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        manager.close()
+        server.server_close()
+
+
+@pytest.mark.parametrize("fault", ["low", "stale"])
+@pytest.mark.parametrize("off_readback", [False, True])
+def test_sop_low_or_stale_finishes_in_final_rest(
+    tmp_path, monkeypatch, fault: str, off_readback: bool
+) -> None:
+    profile = _sop_profile(tmp_path / "workflow.json", duration_s=4.0)
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    if fault == "stale":
+        data["sop_control"]["max_age_s"] = 1.7
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    config = _config(tmp_path, profile)
+    server, manager = build_server(config, port=0, announce=False)
+    if off_readback:
+        backend = manager.get("sim-remote").instrument._backend
+        original_read_status = backend.read_status
+
+        def read_status_with_off():
+            status = original_read_status()
+            if not status.enabled and status.state == OperatingState.STANDBY:
+                return replace(
+                    status, state=OperatingState.OFF,
+                    setpoints=replace(status.setpoints, state=OperatingState.OFF),
+                )
+            return status
+
+        monkeypatch.setattr(backend, "read_status", read_status_with_off)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        _publish_sop(client, 1, 300.0)
+        run = client.start_workflow(
+            "sim-remote", request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+        )
+        if fault == "low":
+            instrument = manager.get("sim-remote").instrument
+            deadline = time.monotonic() + 5
+            while not instrument.connected or instrument.read_status().state.name != "CHARGE":
+                assert time.monotonic() < deadline
+                time.sleep(0.02)
+            _publish_sop(client, 2, 25.0)
+        final = client.wait_workflow("sim-remote", run["run_id"], timeout_s=10,
+                                     poll_interval_s=0.05)
+        assert final["state"] == "stopped"
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        expected = "sop_below_minimum" if fault == "low" else "signal_stale"
+        assert report["sop_control"]["fault"]["reason"] == expected
+        if fault == "low":
+            assert report["sop_control"]["fault"]["low_cycles"] == 2
+        assert report["final_safe_state_verified"] is True
+        assert report["emergency_fallback_used"] is False
+        assert report["sequence_result"]["stages"][-1]["state"] == "passed"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        manager.close()
+        server.server_close()
+
+
+@pytest.mark.parametrize("stage_type", ["constant_current", "constant_power", "cccv"])
+def test_unmet_condition_at_duration_runs_final_rest_without_failure(tmp_path, stage_type) -> None:
+    profile = _profile(tmp_path / "workflow.json", post_sequence_rest_s=0.2)
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    stage = {
+        "name": "bounded-test", "type": stage_type, "duration_s": 0.4,
+        "voltage_limit_enabled": True, "current_limit_enabled": True,
+        "power_limit_enabled": True,
+    }
+    if stage_type == "csv_profile":
+        (tmp_path / "profile.csv").write_text(
+            "time_s,current_a\n0,2\n0.4,0\n", encoding="utf-8"
+        )
+        stage.update(csv_path="profile.csv", profile_kind="current",
+                     current_a=5, power_w=500, charge_voltage_limit_v=99,
+                     discharge_voltage_limit_v=82)
+    else:
+        stage.update(mode="charge", current_a=2, voltage_v=99, power_w=300)
+        if stage_type == "cccv":
+            stage["cutoff_current_a"] = 0.2
+    if stage_type != "cccv":
+        stage["termination_conditions"] = [
+            {"field": "voltage", "operator": ">=", "value": 99.0}
+        ]
+    data["stages"] = [stage, {"name": "skipped-test", "type": "rest", "duration_s": 0.2}]
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    config = _config(tmp_path, profile)
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        run = client.start_workflow(
+            "sim-remote", request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+        )
+        final = client.wait_workflow("sim-remote", run["run_id"], timeout_s=10,
+                                     poll_interval_s=0.05)
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        assert final["state"] == "stopped", final
+        assert final["stop_cause"]["origin"] == "duration_limit"
+        assert report["outcome"] == "stopped"
+        assert "error" not in report
+        assert report["sequence_result"]["skipped_stages"] == ["skipped-test"]
+        assert len(report["sequence_result"]["stages"]) == 2
+        assert report["sequence_result"]["stages"][0]["termination_reason"] == "duration_limit"
+        assert report["sequence_result"]["stages"][0]["termination_detail"]["condition_met"] is False
+        assert report["sequence_result"]["stages"][-1]["state"] == "passed"
+        assert report["final_safe_state_verified"] is True
+        assert report["emergency_fallback_used"] is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        manager.close()
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    ("setup_delay_s", "expected_state", "expected_reason"),
+    [(0.0, "passed", "profile_end"), (0.7, "stopped", "duration_limit")],
+)
+def test_csv_end_and_duration_are_distinct_terminations(
+    tmp_path, monkeypatch, setup_delay_s, expected_state, expected_reason
+) -> None:
+    profile = _profile(tmp_path / "workflow.json", post_sequence_rest_s=0.2)
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    (tmp_path / "profile.csv").write_text(
+        "time_s,current_a\n0,2\n0.2,1\n0.4,0\n", encoding="utf-8"
+    )
+    data["stages"] = [
+        {
+            "name": "csv-test", "type": "csv_profile", "duration_s": 0.6,
+            "csv_path": "profile.csv", "profile_kind": "current",
+            "current_a": 5, "power_w": 500,
+            "voltage_limit_enabled": True, "current_limit_enabled": True,
+            "power_limit_enabled": True, "charge_voltage_limit_v": 99,
+            "discharge_voltage_limit_v": 82,
+            "termination_conditions": [
+                {"field": "voltage", "operator": ">=", "value": 99.0}
+            ],
+        },
+        {"name": "next-rest", "type": "rest", "duration_s": 0.2},
+    ]
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    if setup_delay_s:
+        original_setpoint = sequences_module.DynamicProfileStep._setpoint
+
+        def delayed_first_point(self, value, *, mode=None):
+            if value == 2.0:
+                time.sleep(setup_delay_s)
+            return original_setpoint(self, value, mode=mode)
+
+        monkeypatch.setattr(
+            sequences_module.DynamicProfileStep, "_setpoint", delayed_first_point
+        )
+    config = _config(tmp_path, profile)
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        run = client.start_workflow(
+            "sim-remote", request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+        )
+        final = client.wait_workflow("sim-remote", run["run_id"], timeout_s=10,
+                                     poll_interval_s=0.05)
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        assert final["state"] == expected_state, final
+        assert report["sequence_result"]["stages"][0]["termination_reason"] == expected_reason
+        if expected_state == "passed":
+            assert [stage["termination_reason"] for stage in report["sequence_result"]["stages"]] == [
+                "profile_end", "duration", "duration",
+            ]
+            assert report["sequence_result"]["skipped_stages"] == []
+        else:
+            assert final["stop_cause"]["origin"] == "duration_limit"
+            assert report["sequence_result"]["skipped_stages"] == ["next-rest"]
+            assert report["sequence_result"]["stages"][-1]["state"] == "passed"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        manager.close()
+        server.server_close()
+
+
+def test_discharge_sop_limits_power_then_duration_runs_final_rest(tmp_path) -> None:
+    profile = _sop_profile(tmp_path / "workflow.json", duration_s=0.6)
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    data["sop_control"]["min_discharge_w"] = 100.0
+    data["stages"][0].update(
+        mode="discharge", voltage_v=80,
+        termination={"field": "voltage", "operator": "<=", "value": 80.5},
+    )
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    config = _config(tmp_path, profile)
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        client.submit_external_snapshot(
+            "sim-remote", "bms-main", sequence=1,
+            timestamp_utc=datetime.now(timezone.utc).isoformat(), health="ok",
+            signals={"charge_sop_w": 300.0, "discharge_sop_w": 120.0},
+        )
+        run = client.start_workflow(
+            "sim-remote", request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+        )
+        final = client.wait_workflow("sim-remote", run["run_id"], timeout_s=10,
+                                     poll_interval_s=0.05)
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        assert final["state"] == "stopped"
+        assert final["stop_cause"]["origin"] == "duration_limit"
+        assert report["sop_control"]["fault"] is None
+        assert any(
+            event["kind"] == "limit_applied" and event["applied_power_w"] == 120.0
+            for event in report["sop_control"]["events"]
+        )
+        assert report["sequence_result"]["stages"][0]["termination_reason"] == "duration_limit"
+        assert report["sequence_result"]["stages"][-1]["state"] == "passed"
+        assert report["final_safe_state_verified"] is True
+        assert report["emergency_fallback_used"] is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        manager.close()
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_w"), [("charge", 250.0), ("discharge", 120.0)]
+)
+def test_sop_signed_kw_is_normalized_before_power_limit(tmp_path, mode, expected_w) -> None:
+    profile = _sop_profile(tmp_path / "workflow.json", duration_s=0.5)
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    data["sop_control"].update(
+        unit="kW", charge_value_sign="negative", discharge_value_sign="positive"
+    )
+    data["stages"][0]["mode"] = mode
+    data["stages"][0]["voltage_v"] = 100 if mode == "charge" else 80
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    config = _config(tmp_path, profile)
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        client.submit_external_snapshot(
+            "sim-remote", "bms-main", sequence=1,
+            timestamp_utc=datetime.now(timezone.utc).isoformat(), health="ok",
+            signals={"charge_sop_w": -0.25, "discharge_sop_w": 0.12},
+        )
+        run = client.start_workflow(
+            "sim-remote", request_id=str(uuid.uuid4()),
+            workflow_id="approved-rest-v1",
+            bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+        )
+        final = client.wait_workflow("sim-remote", run["run_id"], timeout_s=10,
+                                     poll_interval_s=0.05)
+        assert final["state"] == "passed", final
+        report = json.loads(Path(final["report_path"]).read_text(encoding="utf-8"))
+        applied = [event for event in report["sop_control"]["events"]
+                   if event["kind"] == "limit_applied"]
+        assert applied[0]["applied_power_w"] == expected_w
+        assert applied[0]["source"]["normalized_w"] == expected_w
+        assert applied[0]["source"]["value"] == (-0.25 if mode == "charge" else 0.12)
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        manager.close()
+        server.server_close()
+
+
+def test_sop_signed_kw_wrong_charge_sign_fails_before_start(tmp_path) -> None:
+    profile = _sop_profile(tmp_path / "workflow.json")
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    data["sop_control"].update(unit="kW", charge_value_sign="negative")
+    profile.write_text(json.dumps(data), encoding="utf-8")
+    config = _config(tmp_path, profile)
+    server, manager = build_server(config, port=0, announce=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    client = NHRServiceClient(f"http://{host}:{port}")
+    try:
+        client.submit_external_snapshot(
+            "sim-remote", "bms-main", sequence=1,
+            timestamp_utc=datetime.now(timezone.utc).isoformat(), health="ok",
+            signals={"charge_sop_w": 0.25, "discharge_sop_w": 0.12},
+        )
+        with pytest.raises(NHRError, match="sop_zero_or_negative"):
+            client.start_workflow(
+                "sim-remote", request_id=str(uuid.uuid4()),
+                workflow_id="approved-rest-v1",
+                bundle_digest=config["workflow_registry"][0]["expected_bundle_digest"],
+            )
+        assert manager.get("sim-remote").instrument.connected is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
         manager.close()
         server.server_close()

@@ -25,6 +25,7 @@ from .errors import (
     NHRValidationError,
 )
 from .external_interlocks import ExternalInterlockManager
+from .dynamic_control import SoPController, SoPTerminalRest
 from .evidence import atomic_write_json, describe_file
 from .execution import execute_workflow_on_runtime
 from .instrument import NHR9300
@@ -83,6 +84,7 @@ class WorkflowRunController:
         self._stop_monitors: dict[str, threading.Thread] = {}
         self._stops: dict[str, threading.Event] = {}
         self._arm_supervisors: dict[str, ArmLeaseSupervisor] = {}
+        self._sop_controllers: dict[str, SoPController] = {}
         self._recovery_required = False
         self._recover_manifests()
 
@@ -183,6 +185,13 @@ class WorkflowRunController:
         preflight_id = f"preflight-{_utc_now().strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
         target = self.output_dir.parent / "workflow-preflights" / preflight_id
         rules = entry.bundle.configuration.external_interlocks  # type: ignore[union-attr]
+        configuration = entry.bundle.configuration  # type: ignore[union-attr]
+        sop_controller = (
+            None if configuration.sop_control is None else SoPController(
+                configuration.sop_control, self.external_interlocks, self.instrument,
+                configuration.safety_limits, configuration.workflow_limits.max_power_w,
+            )
+        )
         self.external_interlocks.activate(rules, phase="pre_start")
         recording_path = target / "measurements" / "preflight.csv"
         recording_started = False
@@ -209,6 +218,7 @@ class WorkflowRunController:
                         simulator_initial_state_policy=self.simulator_initial_state_policy,
                         external_interlock_evidence=self.external_interlocks.status,
                         external_signal_reader=self.external_interlocks.read_termination_signal,
+                        sop_controller=sop_controller,
                     )
                 finally:
                     if recording_started:
@@ -375,6 +385,16 @@ class WorkflowRunController:
                 )
             self._require_available()
             rules = entry.bundle.configuration.external_interlocks  # type: ignore[union-attr]
+            configuration = entry.bundle.configuration  # type: ignore[union-attr]
+            if configuration.sop_control is not None:
+                check = SoPController(
+                    configuration.sop_control, self.external_interlocks, self.instrument,
+                    configuration.safety_limits, configuration.workflow_limits.max_power_w,
+                )
+                try:
+                    check.require_start_ready()
+                except SoPTerminalRest as exc:
+                    raise NHRPolicyError(str(exc)) from exc
             self.external_interlocks.activate(
                 rules, phase="pre_start", latch_runtime=True
             )
@@ -503,9 +523,9 @@ class WorkflowRunController:
                 if stage.type == "rest":
                     explanation = "Rest: measuring until the reviewed duration ends"
                 elif stage.type == "cccv":
-                    explanation = "CCCV active: current cutoff applies after voltage activation; timeout remains enforced"
+                    explanation = "CCCV active: current cutoff applies after voltage activation; duration leads to final rest"
                 elif termination:
-                    explanation = "Test active: waiting for the termination condition; timeout remains enforced"
+                    explanation = "Test active: waiting for the termination condition; duration leads to final rest"
                 else:
                     explanation = "Test active: maintaining operation until the reviewed duration ends"
             run["step_description"] = explanation
@@ -562,6 +582,17 @@ class WorkflowRunController:
                     )
                     with self._state_lock:
                         self._arm_supervisors[run_id] = supervisor
+                sop_controller = (
+                    None if configuration.sop_control is None else SoPController(
+                        configuration.sop_control, self.external_interlocks,
+                        self.instrument, configuration.safety_limits,
+                        configuration.workflow_limits.max_power_w,
+                        arm_lease_supervisor=supervisor,
+                    )
+                )
+                if sop_controller is not None:
+                    with self._state_lock:
+                        self._sop_controllers[run_id] = sop_controller
                 outcome = execute_workflow_on_runtime(
                     profile=profile,
                     output=target,
@@ -586,6 +617,7 @@ class WorkflowRunController:
                     early_stage_end_requested=lambda index: self._stage_end_requested(run_id, index),
                     early_stage_end_applied=lambda index: self._stage_end_applied(run_id, index),
                     operator_interventions=lambda: self._stage_end_evidence(run_id),
+                    sop_controller=sop_controller,
                 )
             report = json.loads(outcome.report_path.read_text(encoding="utf-8"))
             sequence = report.get("sequence_result", {})
@@ -625,6 +657,8 @@ class WorkflowRunController:
                     "reconnected": "status_after_reconnect" in report,
                 },
                 error=report.get("error") or report.get("cleanup_error") or recording.get("error"),
+                **({"stop_cause": report["stop_cause"]}
+                   if report.get("stop_cause") is not None else {}),
             )
         except Exception as exc:
             self._recovery_required = True
@@ -648,8 +682,17 @@ class WorkflowRunController:
             self.external_interlocks.deactivate()
             with self._state_lock:
                 self._arm_supervisors.pop(run_id, None)
+                self._sop_controllers.pop(run_id, None)
                 if self._active_run_id == run_id:
                     self._active_run_id = None
+
+    def active_sop_limit(self) -> dict[str, Any] | None:
+        with self._state_lock:
+            controller = (
+                None if self._active_run_id is None
+                else self._sop_controllers.get(self._active_run_id)
+            )
+        return None if controller is None else controller.runtime_limit()
 
     def _finalize_recording(self, run_id: str, safe: bool) -> dict[str, Any]:
         """Close the run CSV before publishing terminal state and stable hashes.

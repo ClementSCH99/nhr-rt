@@ -21,6 +21,7 @@ from .external_interlocks import (
     ExternalInterlockRule,
 )
 from .routines import Condition, ExternalTerminationCondition, constant_current_hold, constant_power_hold, rest_period
+from .dynamic_control import SoPConfiguration
 from .types import OperatingState, SafetyLimits
 
 
@@ -84,6 +85,7 @@ class WorkflowConfiguration:
     stages: tuple[StageProfile, ...]
     external_interlocks: tuple[ExternalInterlockRule, ...]
     source_path: Path
+    sop_control: SoPConfiguration | None = None
 
     def warnings(self) -> list[str]:
         warnings: list[str] = []
@@ -173,6 +175,7 @@ class WorkflowConfiguration:
                     discharge_voltage_limit_v=stage.discharge_voltage_limit_v,
                     current_limit_a=stage.current_a or 0.0,
                     power_limit_w=stage.power_w or 0.0,
+                    duration_s=stage.duration_s,
                     voltage_limit_enabled=stage.voltage_limit_enabled,
                     current_limit_enabled=stage.current_limit_enabled,
                     power_limit_enabled=stage.power_limit_enabled,
@@ -252,7 +255,7 @@ def load_workflow_profile(path: str | Path) -> WorkflowConfiguration:
         "test_description", "bench_description", "stop_procedure",
         "expected_resource", "expected_serial_number", "simulation_initial_voltage_v",
         "watchdog_enabled", "safety_limits", "workflow_limits", "stages",
-        "external_interlocks",
+        "external_interlocks", "sop_control",
     }
     unknown_root = set(root) - allowed_root
     if unknown_root:
@@ -369,6 +372,20 @@ def load_workflow_profile(path: str | Path) -> WorkflowConfiguration:
             raise NHRValidationError(
                 f"Invalid external_interlocks[{index}]: {exc}"
             ) from exc
+    sop_control = None
+    if root.get("sop_control") is not None:
+        raw_sop = dict(_mapping(root["sop_control"], "sop_control"))
+        required_sop = {"source_id", "charge_signal", "discharge_signal",
+                        "max_age_s", "min_charge_w", "min_discharge_w", "low_cycles"}
+        optional_sop = {"unit", "charge_value_sign", "discharge_value_sign"}
+        if not required_sop <= set(raw_sop) or set(raw_sop) - required_sop - optional_sop:
+            raise NHRValidationError(
+                f"sop_control requires {sorted(required_sop)} and permits {sorted(optional_sop)}"
+            )
+        try:
+            sop_control = SoPConfiguration(**raw_sop)
+        except TypeError as exc:
+            raise NHRValidationError(f"Invalid sop_control: {exc}") from exc
     try:
         return WorkflowConfiguration(
             test_description=str(root.get("test_description", "")),
@@ -383,6 +400,7 @@ def load_workflow_profile(path: str | Path) -> WorkflowConfiguration:
             stages=tuple(stages),
             external_interlocks=tuple(interlocks),
             source_path=source,
+            sop_control=sop_control,
         )
     except (TypeError, ValueError) as exc:
         raise NHRValidationError(f"Invalid workflow profile: {exc}") from exc
@@ -391,6 +409,29 @@ def load_workflow_profile(path: str | Path) -> WorkflowConfiguration:
 def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware: bool) -> None:
     limits = configuration.safety_limits
     workflow = configuration.workflow_limits
+    sop = configuration.sop_control
+    if sop is not None:
+        if not isinstance(sop.source_id, str) or not SOURCE_ID_PATTERN.fullmatch(sop.source_id):
+            raise NHRValidationError("sop_control.source_id is invalid")
+        if any(not isinstance(name, str) or not name.strip()
+               for name in (sop.charge_signal, sop.discharge_signal)):
+            raise NHRValidationError("sop_control signal names are required")
+        for name in ("max_age_s", "min_charge_w", "min_discharge_w"):
+            value = getattr(sop, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise NHRValidationError(f"sop_control.{name} must be finite and positive")
+        if isinstance(sop.low_cycles, bool) or not isinstance(sop.low_cycles, int) or sop.low_cycles < 1:
+            raise NHRValidationError("sop_control.low_cycles must be a positive integer")
+        if not isinstance(sop.unit, str) or sop.unit not in {"W", "kW"}:
+            raise NHRValidationError("sop_control.unit must be W or kW")
+        if (not isinstance(sop.charge_value_sign, str) or
+            sop.charge_value_sign not in {"positive", "negative"}):
+            raise NHRValidationError("sop_control.charge_value_sign is invalid")
+        if (not isinstance(sop.discharge_value_sign, str) or
+            sop.discharge_value_sign not in {"positive", "negative"}):
+            raise NHRValidationError("sop_control.discharge_value_sign is invalid")
+        if _non_negative(workflow.post_sequence_rest_s, "post_sequence_rest_s") <= 0:
+            raise NHRValidationError("SoP control requires post_sequence_rest_s > 0")
     if not limits.approved or not limits.profile_name.strip():
         raise NHRValidationError("safety_limits must be explicitly approved and named")
     if not workflow.approved or not workflow.profile_name.strip():
@@ -425,6 +466,15 @@ def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware:
             )
     if not configuration.stages:
         raise NHRValidationError("At least one stage is required")
+    if (
+        any(stage.type in {"cccv", "csv_profile"} or stage.termination is not None
+            or stage.termination_conditions for stage in configuration.stages)
+        and workflow.post_sequence_rest_s <= 0
+        and configuration.stages[-1].type != "rest"
+    ):
+        raise NHRValidationError(
+            "Stages with termination conditions or CSV duration limits require a final rest stage or post_sequence_rest_s > 0"
+        )
 
     rule_ids: set[str] = set()
     for rule in configuration.external_interlocks:
@@ -532,6 +582,10 @@ def validate_workflow_profile(configuration: WorkflowConfiguration, *, hardware:
             stage.power_limit_enabled,
             f"{stage.name}.power_limit_enabled",
         )
+        if sop is not None and not power_enabled:
+            raise NHRValidationError(
+                f"SoP-controlled stage {stage.name!r} requires power_limit_enabled=true"
+            )
         if not any((voltage_enabled, current_enabled, power_enabled)):
             raise NHRValidationError(
                 f"Stage {stage.name!r} must enable at least one operating limit"

@@ -12,8 +12,9 @@ permission to energize. Copy a template into your reviewed local profile area.
 | `rest.example.json` | Disabled-output rest and observation for duration | Duration and applicability of the initial/final safe-state procedure |
 | `sequence.example.json` | CCCV, rest, CP discharge and optional final relaxation | Each stage, post-sequence rest and maximum sequence duration |
 | `dynamic.example.json` | Signed current/power CSV profiles and rest | CSV time seconds, signed A/W values, direction changes, voltage boundaries |
-| `cc_interlocks.example.json` | CC with critical isolation and temperature interlocks | BMS signal mapping, bool/degC units, extreme temperature and freshness seconds |
 | `discharge_terminations.example.json` | CC discharge ending on the first of capacity, BMS minimum cell voltage or BMS maximum cell temperature; then measured rest | Condition order, normal versus critical thresholds, source freshness, rest duration and total duration |
+| `cc_interlocks.example.json` | CC with isolation permissive and temperature maximum | BMS signal mapping, bool/degC units, maximum temperature and freshness seconds |
+| `sop.example.json` | CC power ceiling from fresh BMS SoP with terminal rest on invalid/low values | Directional SoP signals, SI watts, 1 Hz low-cycle threshold, source age, enabled power channel, final rest |
 
 For every copy review both safety and workflow limits, exact resource/serial,
 bench description, independent safe-state/stop procedure, watchdog, durations,
@@ -32,6 +33,13 @@ active in both stages. A termination on an external signal requires a runtime
 interlock on that same source, signal and unit with a strictly more extreme
 threshold. No threshold or freshness period in these templates is qualified
 for a real DUT.
+
+The SoP example is also unapproved. Its source publishes positive charge and
+discharge power magnitudes in watts through the existing external snapshot API.
+The service applies the active direction's value at a target 1 Hz control rate.
+`max_age_s`, `min_charge_w`, `min_discharge_w` and `low_cycles` are illustrative,
+not qualified values. Zero/invalid/stale SoP or persistent low SoP sends the
+workflow to its approved `post_sequence_rest_s` and ends the run `stopped`.
 
 For a runnable **software-only** console exercise, use
 `../operator-simulation/service.json`. Its approvals apply only to its simulator

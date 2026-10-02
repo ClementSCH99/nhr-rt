@@ -99,6 +99,7 @@ class Setpoints:
     power_slew_rate: float | None = None
     resistance_slew_rate: float | None = None
     control_mode: str = "current"
+    power_ceiling_enforced: bool = False
 
 
 @dataclass(frozen=True, slots=True)

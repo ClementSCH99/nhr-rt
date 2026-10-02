@@ -476,14 +476,20 @@ class InstrumentManager:
         )
         broker.publish(
             "limit",
-            InstrumentManager._power_limit_snapshot(safety.get("safety_limits")),
+            InstrumentManager._power_limit_snapshot(
+                safety.get("safety_limits"),
+                None if managed.workflow_controller is None else
+                managed.workflow_controller.active_sop_limit(),
+            ),
         )
         alerts = InstrumentManager._alerts(managed, safety)
         if alerts:
             broker.publish("alert", {"active": alerts})
 
     @staticmethod
-    def _power_limit_snapshot(limits: Any) -> dict[str, Any]:
+    def _power_limit_snapshot(
+        limits: Any, sop_limit: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
         if limits is None:
             return {
                 "configured": False,
@@ -491,7 +497,7 @@ class InstrumentManager:
                 "discharge_w": None,
                 "external_source": "not_configured",
             }
-        return {
+        result = {
             "configured": True,
             "charge_w": limits.charge_power,
             "discharge_w": limits.discharge_power,
@@ -499,6 +505,13 @@ class InstrumentManager:
             "profile_name": limits.profile_name,
             "external_source": "not_configured",
         }
+        if sop_limit is not None:
+            direction = sop_limit["direction"]
+            result[f"{direction}_w"] = sop_limit["applied_w"]
+            result["basis"] = "approved_stage_workflow_nhr_and_sop"
+            result["external_source"] = sop_limit["source_id"]
+            result["active_sop"] = dict(sop_limit)
+        return result
 
     @staticmethod
     def _alerts(
@@ -628,7 +641,9 @@ class InstrumentManager:
             "external_sources": managed.external_interlocks.status(),
             "interlocks": {"results": safety["interlocks"]},
             "effective_power_limits": self._power_limit_snapshot(
-                safety.get("safety_limits")
+                safety.get("safety_limits"),
+                None if managed.workflow_controller is None else
+                managed.workflow_controller.active_sop_limit(),
             ),
             "alerts": self._alerts(managed, safety),
         }

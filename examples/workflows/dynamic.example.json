@@ -20,7 +20,8 @@
     "max_current_a": 3.0,
     "max_power_w": 250.0,
     "max_stage_duration_s": 8.0,
-    "max_sequence_duration_s": 21.0,
+    "max_sequence_duration_s": 26.0,
+    "post_sequence_rest_s": 5.0,
     "approved": false,
     "profile_name": "UNAPPROVED dynamic workflow"
   },

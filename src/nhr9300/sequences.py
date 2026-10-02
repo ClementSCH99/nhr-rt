@@ -10,7 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Literal, Sequence
+from typing import Any, Callable, Literal, Sequence
 
 from .acquisition import AcquisitionCollector, AcquisitionStatistics
 from .errors import NHRRoutineError, NHRValidationError
@@ -23,6 +23,7 @@ from .routines import (
     DisableStep,
     Routine,
     RoutineRunner,
+    SetpointsStep,
     StandbyStep,
     Step,
 )
@@ -78,6 +79,7 @@ class DynamicProfileStep(Step):
     discharge_voltage_limit_v: float
     current_limit_a: float
     power_limit_w: float
+    duration_s: float | None = None
     voltage_limit_enabled: bool = True
     current_limit_enabled: bool = True
     power_limit_enabled: bool = True
@@ -118,14 +120,34 @@ class DynamicProfileStep(Step):
 
     def execute(self, context) -> None:  # RoutineContext kept private to routines.py
         validate_profile_points(self.points)
-        started = time.monotonic()
+        duration_s = self.duration_s if self.duration_s is not None else self.points[-1].time_s
+        if duration_s < self.points[-1].time_s:
+            raise NHRValidationError("CSV final time cannot exceed stage duration_s")
+        supervisor = context.arm_lease_supervisor
+        stage_deadline = (
+            supervisor.begin_active_interval() if supervisor is not None else None
+        )
+        started = stage_deadline - duration_s if stage_deadline is not None else time.monotonic()
+        stage_deadline = started + duration_s
         active_mode: OperatingState | None = None
         baseline: float | None = None
         accumulated = 0.0
         previous_actual: float | None = None
         conditions = self.termination_conditions or ((self.termination,) if self.termination else ())
 
+        def finish_at_duration(measurement=None) -> None:
+            context.result.termination_reason = "duration_limit"
+            context.result.termination_measurement = measurement
+            context.result.termination_detail = {
+                "source": "duration", "configured_duration_s": duration_s,
+                "condition_met": False, "condition_count": len(conditions),
+                "csv_complete": False,
+            }
+
         for point_index, (point, next_point) in enumerate(zip(self.points, self.points[1:])):
+            if time.monotonic() >= stage_deadline:
+                finish_at_duration(context.instrument.read_measurement())
+                return
             value = point.value
             if value == 0.0:
                 if active_mode is None:
@@ -137,7 +159,12 @@ class DynamicProfileStep(Step):
                 else:
                     # Keep the existing direction/contactors and change only
                     # the primary current or power request to zero.
-                    if context.arm_lease_supervisor is None:
+                    if context.sop_controller is not None:
+                        context.sop_controller.apply_base(
+                            self._setpoint(0.0, mode=active_mode),
+                            profile_point=(point_index, value, active_mode),
+                        )
+                    elif context.arm_lease_supervisor is None:
                         context.instrument.configure_setpoints(
                             self._setpoint(0.0, mode=active_mode)
                         )
@@ -160,7 +187,12 @@ class DynamicProfileStep(Step):
                     context.instrument.read_measurement()
                     baseline = None
                     previous_actual = None
-                if context.arm_lease_supervisor is None:
+                if context.sop_controller is not None:
+                    context.sop_controller.apply_base(
+                        self._setpoint(value),
+                        profile_point=(point_index, value, requested_mode),
+                    )
+                elif context.arm_lease_supervisor is None:
                     context.instrument.configure_setpoints(self._setpoint(value))
                 else:
                     context.arm_lease_supervisor.apply_profile_point(
@@ -180,6 +212,8 @@ class DynamicProfileStep(Step):
                     raise NHRRoutineError(context.collector.error)
                 context.instrument.check_interlocks()
                 measurement = context.instrument.read_measurement()
+                if context.sop_controller is not None and active_mode is not None:
+                    context.sop_controller.checkpoint()
                 stage_end_requested = getattr(context, "early_stage_end_requested", None)
                 if stage_end_requested is not None and stage_end_requested():
                     context.result.termination_reason = "operator_stage_end"
@@ -230,12 +264,16 @@ class DynamicProfileStep(Step):
                 remaining = segment_deadline - time.monotonic()
                 if remaining <= 0.0:
                     break
+                duration_remaining = stage_deadline - time.monotonic()
+                if duration_remaining <= 0.0:
+                    finish_at_duration(measurement)
+                    return
                 arm_lease_supervisor = getattr(
                     context, "arm_lease_supervisor", None
                 )
                 if arm_lease_supervisor is not None:
                     arm_lease_supervisor.checkpoint(measurement)
-                context.stop_event.wait(min(self.poll_interval_s, remaining))
+                context.stop_event.wait(min(self.poll_interval_s, remaining, duration_remaining))
 
         context.instrument.check_interlocks()
         context.result.termination_measurement = context.instrument.read_measurement()
@@ -252,6 +290,7 @@ def dynamic_profile_routine(
     discharge_voltage_limit_v: float,
     current_limit_a: float,
     power_limit_w: float,
+    duration_s: float | None = None,
     voltage_limit_enabled: bool = True,
     current_limit_enabled: bool = True,
     power_limit_enabled: bool = True,
@@ -271,6 +310,7 @@ def dynamic_profile_routine(
                 discharge_voltage_limit_v=discharge_voltage_limit_v,
                 current_limit_a=current_limit_a,
                 power_limit_w=power_limit_w,
+                duration_s=duration_s,
                 voltage_limit_enabled=voltage_limit_enabled,
                 current_limit_enabled=current_limit_enabled,
                 power_limit_enabled=power_limit_enabled,
@@ -302,6 +342,8 @@ class SequenceResult:
     global_csv_path: str | None = None
     global_acquisition: AcquisitionStatistics | None = None
     stage_sample_counts: list[int] = field(default_factory=list)
+    skipped_stages: list[str] = field(default_factory=list)
+    terminal_cause: dict[str, Any] | None = None
     capacity_charge_ah: float = 0.0
     capacity_discharge_ah: float = 0.0
     energy_charge_wh: float = 0.0
@@ -423,6 +465,7 @@ class SequenceRunner:
         progress_callback: Callable[[int, SequenceStage, str | None], None] | None = None,
         failure_handler: Callable[[Exception], bool] | None = None,
         arm_lease_supervisor=None,
+        sop_controller=None,
         evidence_dir: Path | None = None,
         external_signal_reader=None,
         early_stage_end_requested: Callable[[int], bool] | None = None,
@@ -435,6 +478,7 @@ class SequenceRunner:
         self.progress_callback = progress_callback
         self.failure_handler = failure_handler
         self.arm_lease_supervisor = arm_lease_supervisor
+        self.sop_controller = sop_controller
         self.evidence_dir = evidence_dir
         self.external_signal_reader = external_signal_reader
         self.early_stage_end_requested = early_stage_end_requested
@@ -454,7 +498,14 @@ class SequenceRunner:
             else None
         )
         try:
+            executed_stages: list[SequenceStage] = []
+            terminal_rest_requested = False
             for stage_index, stage in enumerate(stages):
+                if terminal_rest_requested and stage_index != len(stages) - 1:
+                    result.skipped_stages.append(stage.name)
+                    continue
+                if self.sop_controller is not None:
+                    self.sop_controller.begin_stage(stage.name)
                 if self.progress_callback is not None:
                     self.progress_callback(stage_index, stage, None)
                 if self.arm_lease_supervisor is not None:
@@ -468,6 +519,10 @@ class SequenceRunner:
                         stage_type=stage.type,
                         duration_s=stage.duration_s,
                         profile_step=profile_step,
+                        approved_setpoints=next(
+                            (step.setpoints for step in stage.routine.steps
+                             if isinstance(step, SetpointsStep)), None,
+                        ),
                     )
                 try:
                     stage_result = RoutineRunner(
@@ -489,16 +544,39 @@ class SequenceRunner:
                             (lambda index=stage_index: self.early_stage_end_requested(index))
                             if self.early_stage_end_requested is not None else None
                         ),
+                        sop_controller=self.sop_controller,
                     ).run(stage.routine)
                 finally:
                     if self.arm_lease_supervisor is not None:
                         self.arm_lease_supervisor.end_stage()
+                    if self.sop_controller is not None:
+                        self.sop_controller.end_stage()
                 result.stages.append(stage_result)
                 if stage_result.termination_reason == "operator_stage_end" and stage_result.state == RoutineState.PASSED:
                     status = self.instrument.read_status()
                     require_disabled_inactive(status)
                     if self.early_stage_end_applied is not None:
                         self.early_stage_end_applied(stage_index)
+                executed_stages.append(stage)
+                if stage_result.termination_reason in ("sop_terminal_rest", "duration_limit"):
+                    terminal_rest_requested = True
+                    if stage_result.termination_reason == "duration_limit":
+                        result.reason = f"Duration limit reached in stage {stage.name!r}"
+                        result.terminal_cause = {
+                            "origin": "duration_limit",
+                            "detail": {"stage": stage.name,
+                                       "configured_duration_s": stage.duration_s,
+                                       "condition_met": False},
+                        }
+                    else:
+                        result.reason = "SoP terminal rest: " + stage_result.reason
+                        result.terminal_cause = {"origin": "sop_control"}
+                    self.instrument.disable()
+                    safe_status = self.instrument.read_status()
+                    require_disabled_inactive(safe_status)
+                    if stages[-1].type != "rest":
+                        raise NHRRoutineError("Terminal rest stage is not configured")
+                    continue
                 if stage_result.state != RoutineState.PASSED:
                     result.state = stage_result.state
                     result.reason = (
@@ -507,8 +585,11 @@ class SequenceRunner:
                     )
                     break
             else:
-                result.state = RoutineState.PASSED
-                result.reason = "All sequence stages passed"
+                if terminal_rest_requested:
+                    result.state = RoutineState.STOPPED
+                else:
+                    result.state = RoutineState.PASSED
+                    result.reason = "All sequence stages passed"
         finally:
             self.collector.set_context()
             if self.manage_collector:
@@ -516,7 +597,6 @@ class SequenceRunner:
             result.global_acquisition = self.collector.statistics()
         if result.global_csv_path is None:
             raise NHRRoutineError("Sequence acquisition did not produce a global CSV")
-        executed_stages = stages[: len(result.stages)]
         result.global_csv_path, result.stage_sample_counts = _split_global_csv(
             result.global_csv_path,
             executed_stages,

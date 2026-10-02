@@ -161,7 +161,7 @@ def test_cc_termination_fields_are_observable(
     assert status.state == OperatingState.STANDBY
 
 
-def test_unreached_condition_fails_instead_of_passing_on_timeout(tmp_path) -> None:
+def test_unreached_condition_records_duration_limit_and_disables_output(tmp_path) -> None:
     instrument = NHR9300(
         "timeout-sim",
         SimulatedBackend("timeout-sim", initial_voltage_v=90.0),
@@ -185,9 +185,9 @@ def test_unreached_condition_fails_instead_of_passing_on_timeout(tmp_path) -> No
     result = RoutineRunner(instrument, collector).run(routine)
     status = instrument.read_status()
     instrument.close()
-    assert result.state == RoutineState.FAILED
-    assert result.termination_reason == "condition_timeout"
-    assert "was not reached" in result.reason
+    assert result.state == RoutineState.PASSED
+    assert result.termination_reason == "duration_limit"
+    assert result.termination_detail["condition_met"] is False
     assert status.enabled is False
 
 

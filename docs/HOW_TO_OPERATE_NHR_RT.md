@@ -246,18 +246,24 @@ sample count and final safe state.
 
 ### Duration and termination are different
 
-A stage without a termination condition passes when its duration elapses. A
-stage with a termination condition must reach that condition before its
-duration expires. The duration is then a maximum allowed time, not an alternate
-successful termination.
+A static active stage without a termination condition passes when its duration
+elapses. For a static active stage with a termination condition, `duration_s`
+remains its maximum active duration. If the condition is still unmet, output is
+disabled and the workflow skips to its final rest. The run is recorded as `stopped`, with
+`duration_limit` and `condition_met: false` in the report, rather than failed.
+For a `csv_profile`, reaching the last CSV timestamp is the normal
+`profile_end` termination, even when external conditions remain unmet. Its
+`duration_s` is a separate upper bound; it triggers the controlled final rest
+only if execution has not completed the CSV by that bound.
 
 ### Several normal stage termination conditions
 
 An active stage can use `termination_conditions` instead of the legacy single
 `termination`. Conditions are checked in profile order on each cycle. The first
 one met ends that stage with `passed`; the report identifies its index, signal,
-value, and, for BMS data, the exact snapshot sequence and timestamps. If no
-condition is met before `duration_s`, the stage fails. An immediate valid
+value, and, for BMS data, the exact snapshot sequence and timestamps. For a
+static stage, an unmet condition at `duration_s` leads directly to final rest.
+For a CSV stage, its profile end remains a normal termination. An immediate valid
 condition also ends the stage immediately. Conditions do not apply during a
 following rest stage.
 
@@ -297,10 +303,11 @@ rest. No BMS condition is needed in a rest stage; configured stage conditions
 are forbidden there. `post_sequence_rest_s` remains an alternative when only a
 final relaxation period is needed.
 
-### Record relaxation after a successful sequence
+### Record final relaxation
 
 Set `workflow_limits.post_sequence_rest_s` to a reviewed number of seconds to
-append an inactive measured rest after all configured stages pass:
+append an inactive measured rest after all configured stages pass, or after a
+controlled stop caused by unmet termination at `duration_s` or a SoP fault:
 
 ```json
 "post_sequence_rest_s": 30.0
@@ -310,7 +317,7 @@ The default is `0`. A positive value creates an explicit
 `post-sequence-rest` stage. Its rows are included in `sequence.csv`, its own
 stage CSV and the canonical `session.csv`. Output is disabled throughout the
 rest, while acquisition, watchdog and applicable interlocks remain active. The
-rest is skipped after a stopped or failed stage, is bounded by
+rest is skipped after an operator stop or failed stage, is bounded by
 `max_stage_duration_s`, and counts toward `max_sequence_duration_s`. Keep
 CAN/BMS publication active until this rest and workflow finalization complete.
 
@@ -360,9 +367,10 @@ Example constant-current stage:
 }
 ```
 
-This passes only if measured voltage reaches at least 94 V within 30 seconds.
-Otherwise the stage ends with a condition timeout. Removing `termination`
-changes the contract: completing 30 seconds becomes the success condition.
+This stage reaches its normal termination if measured voltage reaches at least
+94 V within 30 seconds. Otherwise the workflow stops at the duration limit and
+runs its final rest. Removing `termination` changes the contract: completing
+30 seconds becomes the stage success condition.
 
 ## 6. Configure a simulator service
 
@@ -403,7 +411,7 @@ Configuration fields used by the current service:
 | instrument | `primitive_compatibility_control` | False; gates sensitive legacy primitives on IVI |
 | instrument | `remote_workflow_control` | False; gates registered workflow preflight/start |
 | instrument | `controlled_stop_policy` | Required approved timeout policy for physical remote workflows |
-| workflow limits | `post_sequence_rest_s` | `0`; optional inactive measured relaxation appended after successful stages |
+| workflow limits | `post_sequence_rest_s` | `0`; measured final rest after successful stages or a controlled duration/SoP stop |
 | registry | `workflow_id` | Required unique selection ID |
 | registry | `instrument_id` | Instrument allowed to execute the workflow |
 | registry | `profile_path` | Local profile path, relative to service config when not absolute |
@@ -1515,8 +1523,24 @@ Integration lifecycle:
 API failures expose stable `NHRAPIError.code` values. Branch on the code, not
 the human-readable message: `policy_rejected`, `interlock_unsafe`,
 `state_conflict`, `invalid_request`, `request_failed` or `internal_error`.
-Dynamic SoP power limiting is not implemented; an external SoP value must not
-be interpreted as an applied NHR power limit.
+An approved workflow may opt into the M6 SoP power ceiling. An external snapshot
+alone never enables that control: the registered workflow must contain
+`sop_control`, both directional signals must be fresh before start, every active
+stage must enable its power channel, and `post_sequence_rest_s` must be positive.
+The 1 Hz controller can lower or restore the operating power channel within the
+approved stage/workflow/NHR ceilings. `runtime().effective_power_limits` reports
+the active applied ceiling. A zero, invalid or stale SoP, or a positive value
+below the reviewed minimum for the configured cycles, sends the run to final
+rest and produces a `stopped` report with `sop_control` evidence. It cannot
+authorize a new run or reset an external safety interlock.
+
+`sop_control` defaults to positive watts for both source signals. For a BMS
+publishing negative charge and positive discharge power in kW, set
+`"unit": "kW"`, `"charge_value_sign": "negative"` and
+`"discharge_value_sign": "positive"`. The controller converts each raw value
+to a positive magnitude in watts before comparing it with `min_charge_w`,
+`min_discharge_w` and the approved power ceilings. A value with the wrong sign
+is invalid. The report retains both the raw source value and `normalized_w`.
 
 ## 27. Consume finalized evidence
 
@@ -1561,7 +1585,8 @@ merge is implied.
   record.
 - Primitive compatibility control is a migration flag, not access control.
 - The localhost service and monitor have no network authentication boundary.
-- Dynamic SoP limiting remains future work.
+- M6 SoP limiting is software/simulator validated only until a separately
+  authorized NHR/BMS timing and physical-output campaign is completed.
 
 Use [Architecture and design](ARCHITECTURE.md) for ownership and rationale,
 [Validation status and plan](VALIDATION.md) for evidence boundaries and future

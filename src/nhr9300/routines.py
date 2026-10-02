@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping, Sequence
 from .acquisition import AcquisitionCollector
 from .errors import NHRRoutineError, NHRValidationError
 from .instrument import NHR9300
+from .dynamic_control import SoPController, SoPTerminalRest
 from .types import (
     Measurement,
     OperatingState,
@@ -146,7 +147,10 @@ class SetpointsStep(Step):
     name = "setpoints"
 
     def execute(self, context: RoutineContext) -> None:
-        context.instrument.configure_setpoints(self.setpoints)
+        if context.sop_controller is None:
+            context.instrument.configure_setpoints(self.setpoints)
+        else:
+            context.sop_controller.apply_base(self.setpoints)
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,7 +181,13 @@ class WaitStep(Step):
         rest_deadline = (
             supervisor.begin_rest_wait(self.duration_s) if supervisor is not None else None
         )
-        deadline = rest_deadline if rest_deadline is not None else time.monotonic() + self.duration_s
+        active_deadline = (
+            supervisor.begin_active_interval() if supervisor is not None
+            and self.mode in (OperatingState.CHARGE, OperatingState.DISCHARGE) else None
+        )
+        deadline = (rest_deadline if rest_deadline is not None else
+                    active_deadline if active_deadline is not None else
+                    time.monotonic() + self.duration_s)
         latest_measurement: Measurement | None = None
         latest_compared: float | None = None
         condition_active = self.activation_condition is None
@@ -186,7 +196,7 @@ class WaitStep(Step):
         while True:
             if context.stop_event.is_set():
                 raise InterruptedError("Routine stop requested")
-            if rest_deadline is not None and time.monotonic() >= deadline:
+            if time.monotonic() > deadline:
                 break
             if context.collector.error:
                 raise NHRRoutineError(context.collector.error)
@@ -198,6 +208,9 @@ class WaitStep(Step):
                 context.result.termination_reason = "operator_stage_end"
                 context.result.termination_measurement = measurement
                 return
+            sop_controller = getattr(context, "sop_controller", None)
+            if sop_controller is not None:
+                sop_controller.checkpoint()
             if self.mode in (OperatingState.CHARGE, OperatingState.DISCHARGE):
                 if context.result.initial_active_measurement is None:
                     context.result.initial_active_measurement = measurement
@@ -219,6 +232,10 @@ class WaitStep(Step):
                     abs_tol=self.activation_tolerance,
                 )
             for index, condition in enumerate(conditions):
+                if (condition is self.condition and isinstance(condition, Condition)
+                    and condition.field == "cutoff_current" and sop_controller is not None
+                    and sop_controller.is_power_restricted()):
+                    continue
                 evidence = None
                 if isinstance(condition, ExternalTerminationCondition):
                     reader = context.external_signal_reader
@@ -269,17 +286,13 @@ class WaitStep(Step):
         if rest_deadline is not None:
             supervisor.complete_rest_wait()
         if conditions:
-            context.result.termination_reason = "condition_timeout"
-            first = conditions[0]
-            context.result.termination_field = first.signal if isinstance(first, ExternalTerminationCondition) else first.field
-            context.result.termination_value = latest_compared
-            context.result.termination_baseline = baselines.get(0)
+            context.result.termination_reason = "duration_limit"
             context.result.termination_measurement = latest_measurement
-            if self.condition is not None and not self.termination_conditions:
-                detail = f"Termination condition {self.condition.field!r} was not reached"
-            else:
-                detail = "No termination condition was reached"
-            raise NHRRoutineError(f"{detail} within {self.duration_s:.3f} s")
+            context.result.termination_detail = {
+                "source": "duration", "configured_duration_s": self.duration_s,
+                "condition_met": False, "condition_count": len(conditions),
+            }
+            return
         context.result.termination_reason = "duration"
         context.result.termination_measurement = latest_measurement
 
@@ -315,6 +328,7 @@ class RoutineContext:
     arm_lease_supervisor: Any | None = None
     external_signal_reader: Callable[[ExternalTerminationCondition], tuple[float, dict[str, Any]]] | None = None
     early_stage_end_requested: Callable[[], bool] | None = None
+    sop_controller: SoPController | None = None
 
 
 class RoutineRunner:
@@ -330,6 +344,7 @@ class RoutineRunner:
         arm_lease_supervisor: Any | None = None,
         external_signal_reader: Callable[[ExternalTerminationCondition], tuple[float, dict[str, Any]]] | None = None,
         early_stage_end_requested: Callable[[], bool] | None = None,
+        sop_controller: SoPController | None = None,
     ) -> None:
         self.instrument = instrument
         self.collector = collector
@@ -342,6 +357,7 @@ class RoutineRunner:
         self._arm_lease_supervisor = arm_lease_supervisor
         self._external_signal_reader = external_signal_reader
         self._early_stage_end_requested = early_stage_end_requested
+        self._sop_controller = sop_controller
         self._thread: threading.Thread | None = None
 
     @property
@@ -415,6 +431,7 @@ class RoutineRunner:
             self._arm_lease_supervisor,
             self._external_signal_reader,
             self._early_stage_end_requested,
+            self._sop_controller,
         )
         try:
             for index, step in enumerate(routine.steps):
@@ -437,10 +454,16 @@ class RoutineRunner:
                 )
             elif result.termination_reason == "duration":
                 result.reason = "Configured duration elapsed"
+            elif result.termination_reason == "duration_limit":
+                result.reason = "Configured duration elapsed before a termination condition"
             elif result.termination_reason == "operator_stage_end":
                 result.reason = "Stage ended early by operator request"
             else:
                 result.reason = "Routine completed"
+        except SoPTerminalRest as exc:
+            result.state = RoutineState.STOPPED
+            result.termination_reason = "sop_terminal_rest"
+            result.reason = str(exc)
         except InterruptedError as exc:
             result.state = RoutineState.STOPPED
             result.reason = str(exc)

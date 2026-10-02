@@ -145,6 +145,7 @@ def test_profile_validates_multiple_terminations_guard_and_rest_warning(tmp_path
     template = json.loads(Path("examples/workflows/cc.example.json").read_text(encoding="utf-8"))
     template["safety_limits"]["approved"] = True
     template["workflow_limits"]["approved"] = True
+    template["workflow_limits"].pop("post_sequence_rest_s", None)
     stage = template["stages"][0]
     stage["mode"] = "discharge"
     stage["voltage_v"] = 82.0
@@ -162,9 +163,9 @@ def test_profile_validates_multiple_terminations_guard_and_rest_warning(tmp_path
     profile = tmp_path / "workflow.json"
     profile.write_text(json.dumps(template), encoding="utf-8")
     configuration = load_workflow_profile(profile)
-    validate_workflow_profile(configuration, hardware=False)
+    with pytest.raises(NHRValidationError, match="final rest"):
+        validate_workflow_profile(configuration, hardware=False)
     assert len(configuration.stages[0].termination_conditions) == 2
-    assert configuration.warnings()
     template["workflow_limits"]["post_sequence_rest_s"] = 5.0
     profile.write_text(json.dumps(template), encoding="utf-8")
     configuration = load_workflow_profile(profile)

@@ -63,6 +63,40 @@ class ExternalInterlockManager:
         self._latched: dict[str, InterlockSignal] = {}
         self._safe_since: dict[str, float] = {}
 
+    def numeric_signal(self, source_id: str, signal: str, max_age_s: float) -> dict[str, Any]:
+        """Read one decoded value with the same source identity and freshness rules.
+
+        Operating controls use this without turning their values into interlocks.
+        The returned reason is stable enough for run evidence and diagnostics.
+        """
+        with self._lock:
+            snapshot = self._snapshots.get(source_id)
+            fault = self._source_faults.get(source_id)
+            result: dict[str, Any] = {
+                "source_id": source_id, "signal": signal, "value": None,
+                "sequence": None, "timestamp_utc": None, "age_s": None,
+                "reason": None,
+            }
+            if fault is not None:
+                result["reason"] = f"source_rejected: {fault}"
+            elif snapshot is None:
+                result["reason"] = "source_missing"
+            else:
+                age = max(0.0, time.monotonic() - snapshot.data_monotonic)
+                value = snapshot.signals.get(signal)
+                result.update(sequence=snapshot.sequence,
+                              timestamp_utc=snapshot.timestamp_utc,
+                              age_s=age, value=value)
+                if snapshot.health != "ok":
+                    result["reason"] = f"source_health_{snapshot.health}"
+                elif age > max_age_s:
+                    result["reason"] = "signal_stale"
+                elif value is None:
+                    result["reason"] = "signal_missing"
+                elif isinstance(value, bool) or not isinstance(value, (int, float)):
+                    result["reason"] = "signal_not_numeric"
+            return result
+
     @staticmethod
     def _validate_source_id(source_id: str) -> None:
         if not SOURCE_ID_PATTERN.fullmatch(source_id):

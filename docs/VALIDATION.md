@@ -16,7 +16,7 @@ row never authorizes another physical run.
 | External fail-closed interlocks | Snapshot validation, freshness, latching, controlled stop and fallback covered | No real CAN/BMS or sensor-chain validation | Software accepted; physical integration open |
 | Multiple normal stage terminations | Ordered NHR/BMS conditions, critical-interlock precedence, measured rest and finalized service evidence covered in simulation | No physical threshold or sensor-chain validation | Software accepted; physical profile review open |
 | CAN-PY public integration | 64-bit publisher, retry/idempotence, capability discovery and lifecycle contract covered | No real CAN traffic or combined physical evidence | Boundary ready; end-to-end integration open |
-| Dynamic SoP envelope | Not implemented | Not tested | Planned Milestone 6 |
+| Dynamic SoP envelope | Implemented on `dev`; focused simulator tests cover limiting, restoration, zero, low and stale exits across CC, CCCV, CP and CSV modes | Not tested with a real BMS or NHR SoP updates | Software validation passed; physical qualification open |
 | v0.3.0 integrated release | Partial inputs above | Not qualified as a complete release | Planned Milestone 7 |
 
 The two routinely skipped tests are hardware-gated. A software suite reported
@@ -26,6 +26,27 @@ otherwise.
 The 2026-09-14 documentation consolidation was revalidated with **181 passed,
 2 skipped** in the 32-bit project environment. It added no new physical
 evidence.
+
+On 2026-10-01, the M6 development branch was advanced to `6365e57` and the
+integrated checkout passed **217 tests, 11 skipped** with `.venv32` and
+`-p no:cacheprovider`. One earlier full run had a transient Windows socket
+abort in the existing oversized-HTTP-body test; that test passed in isolation
+and the complete rerun passed. OneDrive blocked the repository-local test
+directory, so pytest used the dedicated
+`C:\.codex-playground\nhr-rt-m6-compat\.codex_tmp` basetemp. The integrated
+suite includes a CSV-point/SoP update test with arm-lease authority enabled.
+This is software/simulator evidence only; no CAN/BMS or physical NHR SoP run
+was performed.
+
+The signed-kW SoP follow-up on 2026-10-01 passed **229 tests, 2 skipped** in
+`.venv32`. Focused service tests verify negative charge kW and positive
+discharge kW are normalized to positive watts, while a wrong-sign charge value
+is rejected before output can start. The local `cc_mod_3C_SOP.json` passes
+`nhr9300-bundle inspect --hardware` after its operating power channel and
+same-signal `batteryVoltage` interlock were corrected. This does not establish
+real BMS scaling, physical 1 Hz response or DUT approval. Its hardware registry
+entry is prepared with the matching digest and `approved: false`; it is not
+selectable for a physical run until separately approved and reloaded.
 
 The current implementation has passed software, simulator and supervised NHR
 tests for read-only acquisition, safety primitives, watchdog loss, CC, CCCV,
@@ -291,24 +312,27 @@ only; no example was approved or physically executed.
 
 ### Milestone 6 — dynamic SoP envelope
 
-The intended contract is that fresh external charge/discharge capability may
-only reduce the effective power ceiling. The applied ceiling is the minimum of
-the approved workflow ceiling, NHR safety limit and fresh external SoP value.
-It never rewrites or increases approved NHR safety limits.
+An approved workflow opts into a 1 Hz SoP operating control. The applied power
+channel is the minimum of the active stage request, workflow maximum, approved
+NHR safety limit and fresh directional BMS SoP. Approved NHR safety limits are
+never rewritten. The shared external numeric reader can serve later BMS-based
+charge stages without giving the BMS direct instrument authority.
 
-Implementation is not authorized by this plan. Before coding, freeze the
-contract and architecture. Software acceptance must demonstrate:
+The software acceptance checks are:
 
 - rising, falling, missing, invalid and stale SoP in the simulator;
 - applied setpoints never exceeding workflow, hardware or external ceilings;
 - CC, CCCV, CP and dynamic-profile compatibility without relay/state cycling;
 - unchanged legacy regulation behavior;
-- controlled stop and durable evidence when required SoP becomes unavailable;
+- verified disabled output, approved final rest and durable `stopped` evidence
+  when required SoP is unavailable, zero or persistently below its minimum;
 - source, requested, approved and applied power values for material changes.
 
 Physical status remains `NOT TESTED`. It requires separately reviewed signals,
 units, timestamps, cadence, thresholds, profiles, stop timing and immediate
-per-run authorization.
+per-run authorization. The simulator does not prove that IVI `SetState` can
+accept 1 Hz power-channel updates without a state/contact cycling effect or
+that actual output power tracks a rapidly falling BMS ceiling within 1 s.
 
 ### Milestone 7 — integrated validation and v0.3.0
 

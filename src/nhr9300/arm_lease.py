@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import math
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -18,6 +19,7 @@ from .types import Measurement, OperatingState, SafetyLimits, Setpoints, to_json
 ARM_LEASE_DURATION_S = 300.0
 ARM_RENEWAL_MARGIN_S = 60.0
 DEADLINE_DETECTION_GRACE_S = 0.2
+STAGE_TRANSITION_GRACE_S = 1.0
 ACTIVE_STAGE_TYPES = frozenset(
     {"constant_current", "cccv", "constant_power", "csv_profile"}
 )
@@ -79,6 +81,7 @@ class ArmLeaseSupervisor:
         self._expected_setpoints: Setpoints | None = None
         self._profile_step: Any | None = None
         self._profile_index = -1
+        self._approved_base: Setpoints | None = None
         self._events: list[dict[str, Any]] = []
         self._renewal_count = 0
         self._status = "active"
@@ -108,6 +111,7 @@ class ArmLeaseSupervisor:
         stage_type: str | None,
         duration_s: float | None,
         profile_step: Any | None = None,
+        approved_setpoints: Setpoints | None = None,
     ) -> None:
         """Bind renewal authority to one immutable approved stage."""
         with self._lock:
@@ -125,6 +129,7 @@ class ArmLeaseSupervisor:
             self._expected_setpoints = None
             self._profile_step = profile_step if stage_type == "csv_profile" else None
             self._profile_index = -1
+            self._approved_base = approved_setpoints if stage_type != "csv_profile" else None
             self._deadline_reported = None
             if (
                 stage_type in ACTIVE_STAGE_TYPES
@@ -152,6 +157,20 @@ class ArmLeaseSupervisor:
             self._condition.notify_all()
             return float(stage["deadline_monotonic"])
 
+    def begin_active_interval(self) -> float | None:
+        """Start the reviewed active duration when the operating step begins."""
+        with self._lock:
+            stage = self._stage
+            if stage is None or stage.get("type") not in ACTIVE_STAGE_TYPES:
+                return None
+            if stage.get("active_started_monotonic") is None:
+                started = self.clock()
+                stage["active_started_monotonic"] = started
+                stage["deadline_monotonic"] = started + float(stage["duration_s"])
+                self._record("active_interval_started", reason="approved_active_duration")
+                self._condition.notify_all()
+            return float(stage["deadline_monotonic"])
+
     def complete_rest_wait(self) -> None:
         with self._lock:
             stage = self._stage
@@ -168,6 +187,7 @@ class ArmLeaseSupervisor:
             self._stage = None
             self._expected_setpoints = None
             self._profile_step = None
+            self._approved_base = None
             self._deadline_reported = None
             self._condition.notify_all()
 
@@ -180,6 +200,7 @@ class ArmLeaseSupervisor:
             self._stage = None
             self._expected_setpoints = None
             self._profile_step = None
+            self._approved_base = None
             self._condition.notify_all()
             thread = self._deadline_thread
         if thread is not None and thread is not threading.current_thread():
@@ -234,9 +255,10 @@ class ArmLeaseSupervisor:
 
             approved_end = min(
                 self._sequence_deadline,
-                float(stage_deadline) if stage_deadline is not None else self._sequence_deadline,
+                (float(stage_deadline) + STAGE_TRANSITION_GRACE_S)
+                if stage_deadline is not None else self._sequence_deadline,
             )
-            # A lease already valid through the approved end needs no extension.
+            # Keep the lease valid long enough for the bounded transition to rest.
             if armed_until >= approved_end:
                 return
 
@@ -299,7 +321,8 @@ class ArmLeaseSupervisor:
             self._refuse("stop_requested_during_profile_point")
 
     def apply_profile_point(
-        self, *, index: int, value: float, mode: OperatingState
+        self, *, index: int, value: float, mode: OperatingState,
+        effective_setpoints: Setpoints | None = None,
     ) -> None:
         """Apply only the next point of the bound, approved dynamic profile."""
         with self._lock:
@@ -308,7 +331,9 @@ class ArmLeaseSupervisor:
                 OperatingState.CHARGE if value > 0 else OperatingState.DISCHARGE
             ):
                 self._refuse("dynamic_profile_direction_mismatch")
-            requested = self._profile_step._setpoint(value, mode=mode)
+            approved = self._profile_step._setpoint(value, mode=mode)
+            requested = effective_setpoints if effective_setpoints is not None else approved
+            self._require_power_reduction(approved, requested)
             try:
                 before = self.instrument.read_status()
                 if self._expected_setpoints is not None:
@@ -329,6 +354,7 @@ class ArmLeaseSupervisor:
                 self._refuse("stop_requested_after_profile_point")
             self._expected_setpoints = status.setpoints
             self._profile_index = index
+            self._approved_base = approved
             self._record("profile_point_applied", reason="approved_profile_point", point_index=index)
 
     def inactive_profile_point(self, *, index: int, value: float) -> None:
@@ -342,7 +368,47 @@ class ArmLeaseSupervisor:
                 self._refuse("inactive_profile_point_not_disabled")
             self._expected_setpoints = None
             self._profile_index = index
+            self._approved_base = None
             self._record("profile_point_inactive", reason="approved_zero_point", point_index=index)
+
+    @staticmethod
+    def _require_power_reduction(approved: Setpoints, requested: Setpoints) -> None:
+        if requested.power > approved.power or requested.power < 0:
+            raise ArmLeaseRenewalError("SoP update exceeds approved power")
+        if (requested.power < approved.power and
+            (not approved.power_enabled or not requested.power_ceiling_enforced)):
+            raise ArmLeaseRenewalError("SoP reduction requires an enforced power channel")
+        if replace(requested, power=approved.power,
+                   power_ceiling_enforced=approved.power_ceiling_enforced) != approved:
+            raise ArmLeaseRenewalError("SoP update changed an approved non-power setpoint")
+
+    def apply_sop_limit(self, approved: Setpoints, requested: Setpoints) -> None:
+        """Apply a power-only reduction of the bound stage or CSV point."""
+        with self._lock:
+            if self._status != "active" or self._stage is None or self._approved_base != approved:
+                self._refuse("no_matching_approved_sop_base")
+            if self.stop_event.is_set():
+                self._refuse("stop_requested_during_sop_update")
+            self._require_power_reduction(approved, requested)
+            try:
+                before = self.instrument.read_status()
+                if self._expected_setpoints is None:
+                    if before.enabled or before.state not in (OperatingState.OFF, OperatingState.STANDBY):
+                        raise NHRStateError("SoP stage has no confirmed starting state")
+                elif before.setpoints != self._expected_setpoints:
+                    raise NHRStateError("NHR setpoints changed before SoP update")
+                self.instrument.configure_setpoints(requested)
+                status = self.instrument.read_status()
+                self._require_requested_readback(requested, status.setpoints)
+            except Exception as exc:
+                self._expected_setpoints = None
+                self._record("refused", reason=f"sop_update: {type(exc).__name__}: {exc}")
+                raise ArmLeaseRenewalError(f"SoP update failed closed: {exc}") from exc
+            if self.stop_event.is_set():
+                self._refuse("stop_requested_after_sop_update")
+            self._expected_setpoints = status.setpoints
+            self._record("sop_limit_applied", reason="approved_power_reduction",
+                         applied_power_w=requested.power)
 
     @staticmethod
     def _require_requested_readback(requested: Setpoints, observed: Setpoints) -> None:
@@ -353,7 +419,6 @@ class ArmLeaseSupervisor:
         for name in ("voltage", "current", "power", "resistance"):
             if not math.isclose(getattr(requested, name), getattr(observed, name), rel_tol=1e-6, abs_tol=0.01):
                 raise NHRStateError(f"Dynamic profile {name} readback mismatch")
-
     def record_external_expiration(self, reason: str) -> None:
         with self._lock:
             self._record("expired", reason=reason)
@@ -377,19 +442,21 @@ class ArmLeaseSupervisor:
                 candidates: list[tuple[float, str]] = []
                 if self._sequence_deadline is not None:
                     candidates.append(
-                        (self._sequence_deadline, "approved_sequence_duration_exceeded")
+                        (self._sequence_deadline + DEADLINE_DETECTION_GRACE_S,
+                         "approved_sequence_duration_exceeded")
                     )
                 if self._stage is not None:
                     stage_deadline = self._stage.get("deadline_monotonic")
                     if stage_deadline is not None:
                         candidates.append(
-                            (float(stage_deadline), "approved_stage_duration_exceeded")
+                            (float(stage_deadline) + STAGE_TRANSITION_GRACE_S,
+                             "approved_stage_duration_exceeded")
                         )
                 if not candidates:
                     self._condition.wait(timeout=0.2)
                     continue
                 deadline, reason = min(candidates)
-                remaining = deadline + DEADLINE_DETECTION_GRACE_S - now
+                remaining = deadline - now
                 if remaining > 0:
                     self._condition.wait(timeout=min(remaining, 0.2))
                     continue

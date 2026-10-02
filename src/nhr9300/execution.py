@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping
 
 from .acquisition import AcquisitionCollector
 from .arm_lease import ArmLeaseSupervisor
+from .dynamic_control import SoPController
 from .backends.ivi import IVIBackend
 from .backends.simulator import SimulatedBackend
 from .evidence import atomic_write_json
@@ -154,6 +155,7 @@ def execute_workflow_on_runtime(
     early_stage_end_requested: Callable[[int], bool] | None = None,
     early_stage_end_applied: Callable[[int], None] | None = None,
     operator_interventions: Callable[[], list[dict[str, Any]]] | None = None,
+    sop_controller: SoPController | None = None,
 ) -> WorkflowOutcome:
     """Execute an approved workflow on a service-owned runtime.
 
@@ -174,6 +176,8 @@ def execute_workflow_on_runtime(
             for condition in stage.termination_conditions
         ) and external_signal_reader is None:
             raise ValueError("External termination requires the service snapshot runtime")
+        if configuration.sop_control is not None and sop_controller is None:
+            raise ValueError("SoP workflows require the service-owned dynamic controller")
         dynamic_profile_files = _dynamic_profile_evidence(configuration)
         planned_stages = (
             None
@@ -248,6 +252,8 @@ def execute_workflow_on_runtime(
         instrument.read_measurement()
         instrument.check_interlocks()
         cleanup_authorized = True
+        if sop_controller is not None:
+            sop_controller.require_start_ready()
 
         instrument.configure_safety_limits(configuration.safety_limits)
         limits_configured = True
@@ -285,15 +291,24 @@ def execute_workflow_on_runtime(
                 progress_callback=progress_callback,
                 failure_handler=runtime_safety_failure,
                 arm_lease_supervisor=arm_lease_supervisor,
+                sop_controller=sop_controller,
                 evidence_dir=output / "measurements",
                 external_signal_reader=external_signal_reader,
                 early_stage_end_requested=early_stage_end_requested,
                 early_stage_end_applied=early_stage_end_applied,
             ).run(planned_stages)
             report["sequence_result"] = to_jsonable(sequence_result)
-            if sequence_result.state == RoutineState.STOPPED and stop_event.is_set():
+            if sequence_result.state == RoutineState.STOPPED and (
+                stop_event.is_set() or sequence_result.terminal_cause is not None
+            ):
                 report["stopped"] = True
                 report["stop_reason"] = sequence_result.reason
+                if sequence_result.terminal_cause is not None:
+                    report["stop_cause"] = dict(sequence_result.terminal_cause)
+                if sop_controller is not None and sop_controller.fault is not None:
+                    report["stop_cause"] = {
+                        "origin": "sop_control", "detail": sop_controller.fault,
+                    }
             elif sequence_result.state != RoutineState.PASSED:
                 raise RuntimeError(sequence_result.reason)
     except Exception as exc:
@@ -309,6 +324,8 @@ def execute_workflow_on_runtime(
         else:
             report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
+        if sop_controller is not None:
+            report["sop_control"] = sop_controller.snapshot()
         if arm_lease_supervisor is not None:
             try:
                 arm_lease_supervisor.close(
@@ -447,6 +464,8 @@ def execute_workflow(request: WorkflowRequest) -> WorkflowOutcome:
             raise ValueError(
                 "External interlock workflows require the service-owned snapshot runtime"
             )
+        if configuration.sop_control is not None:
+            raise ValueError("SoP workflows require the service-owned dynamic controller")
         dynamic_profile_files = _dynamic_profile_evidence(configuration)
         planned_stages = (
             None
@@ -541,7 +560,11 @@ def execute_workflow(request: WorkflowRequest) -> WorkflowOutcome:
                 evidence_dir=output / "measurements",
             ).run(planned_stages)
             report["sequence_result"] = to_jsonable(sequence_result)
-            if sequence_result.state != RoutineState.PASSED:
+            if sequence_result.state == RoutineState.STOPPED and sequence_result.terminal_cause is not None:
+                report["stopped"] = True
+                report["stop_reason"] = sequence_result.reason
+                report["stop_cause"] = sequence_result.terminal_cause
+            elif sequence_result.state != RoutineState.PASSED:
                 raise RuntimeError(sequence_result.reason)
     except KeyboardInterrupt:
         report["error"] = "KeyboardInterrupt: operator requested stop"
@@ -580,7 +603,7 @@ def execute_workflow(request: WorkflowRequest) -> WorkflowOutcome:
                 _require_final_safe(final_status, final_watchdog)
                 report["status_after_reconnect"] = to_jsonable(final_status)
                 report["watchdog_after_reconnect"] = final_watchdog
-                report["passed"] = "error" not in report
+                report["passed"] = "error" not in report and not report.get("stopped", False)
             except Exception as exc:
                 report["cleanup_error"] = f"{type(exc).__name__}: {exc}"
                 report["passed"] = False
@@ -592,7 +615,10 @@ def execute_workflow(request: WorkflowRequest) -> WorkflowOutcome:
             report["close_error"] = f"{type(exc).__name__}: {exc}"
             report["passed"] = False
         report["ended_at_utc"] = datetime.now(timezone.utc)
-        report["outcome"] = "passed" if report["passed"] else "failed"
+        report["outcome"] = (
+            "passed" if report["passed"] else
+            "stopped" if report.get("stopped", False) else "failed"
+        )
         report["artifact_manifest_path"] = str(
             report_path.with_name("artifacts.json").resolve()
         )

@@ -1,10 +1,10 @@
 # NHR Remote Testing roadmap
 
-**Last updated:** September 14, 2026
+**Last updated:** October 1, 2026
 
 **Current release:** v0.2.0
 
-**Current phase:** Operator consolidation before Milestone 6
+**Current phase:** Milestone 6 software complete; physical validation pending
 
 **Target release:** v0.3.0
 
@@ -17,8 +17,9 @@ an unapproved example catalogue. See the
 This work is limited to NHR-RT; CAN-PY automatic finalization/merge remains a
 separate integration dependency. M1-M5 software is implemented; physical
 acceptance remains limited to the documented configurations/campaigns below.
-M6 remains the next functional objective, followed by M7 integrated release
-validation. Operator acceptance and physical qualification are separate gates.
+M6 software is validated on the development branch. Its CAN/BMS and NHR
+physical qualification remains open. Operator acceptance, M6 physical testing
+and M7 integrated release validation are separate gates.
 
 ## Product direction
 
@@ -37,9 +38,10 @@ behavior and the selected physical workflows were validated through Session 5.
 Expansion Phase 2 makes those capabilities safely usable by 64-bit
 applications. Milestones 1–4 established remote orchestration and the read-only
 operator interface without moving hardware authority outside `nhr-rt`.
-Milestone 5 now implements the external-safety contract in software. Its real
-CAN/BMS and physical-stop validation remains gated. Milestones 6–7 remain the
-future dynamic-limit and release work.
+Milestone 5 implements the external-safety contract in software. Its real
+CAN/BMS and physical-stop validation remains gated. Milestone 6 adds an
+optional workflow-owned SoP operating ceiling in software; physical SoP timing
+and Milestone 7 release validation remain open.
 
 The target system uses shared authority rather than one universal master:
 
@@ -336,22 +338,35 @@ weakening approved static limits.
 
 ### Contract
 
-- Charge and discharge power availability are positive magnitudes in watts.
-- The effective power constraint is the minimum of the approved workflow
-  ceiling, NHR safety limit and fresh external SoP value.
+- Charge and discharge power availability are normalized to positive magnitudes
+  in watts; the workflow declares the source unit and directional sign when
+  the BMS publishes another convention.
+- SoP control is declared by each approved workflow. It requires named charge
+  and discharge signals, maximum source age, directional minimum values,
+  consecutive low control cycles and a positive `post_sequence_rest_s`.
+- The effective power constraint is the minimum of the approved stage and
+  workflow ceilings, NHR safety limit and fresh external SoP value.
 - A new SoP value may raise or lower the effective constraint, but it can never
   exceed the approved ceilings.
 - The dynamic envelope changes operating control/limiting values; it does not
   rewrite the approved NHR safety limits.
-- Missing, invalid or stale required SoP invokes the same controlled-stop and
-  emergency-fallback policy as other external safety data.
+- A missing, invalid, rejected, unhealthy, stale or zero SoP requests an
+  immediate transition to the approved final rest. A positive SoP below the
+  directional minimum for the configured number of 1 Hz control cycles takes
+  the same path. No active stage resumes in that run.
+- The output is disabled and verified before final rest. A failed or delayed
+  transition uses the approved emergency fallback. The run ends `stopped` with
+  the SoP cause and skipped stages recorded; it never reports `passed`.
+- SoP is an operating constraint. External safety interlocks retain their
+  independent latching and stop policy.
 
 ### Work
 
 1. Define the power-envelope provider independently of CAN transport.
 2. Apply the effective limit to CC, CCCV, constant-power and dynamic-profile
    stages without changing their primary regulation mode.
-3. Avoid relay or state cycling for ordinary SoP updates.
+3. Keep ordinary SoP updates within the active NHR mode. Measure real NHR
+   write/readback latency before any hardware cadence claim.
 4. Record source, requested, approved and applied values for every material
    limit change.
 5. Extend the simulator to exercise rising, falling, missing and stale SoP.
@@ -362,6 +377,13 @@ weakening approved static limits.
 - applied setpoints never exceed the workflow, hardware or external ceiling;
 - legacy current- and power-regulation tests do not regress;
 - stale SoP produces the documented stop behavior and evidence.
+
+### M6.5 — BMS-requested charge current (later)
+
+A later, separately approved stage type will use a BMS current request as its
+charge setpoint. It may reuse M6's transport-independent numeric source reader,
+freshness handling, service-owned setpoint authority and evidence. Its current
+policy, CV interaction and stage termination are outside M6.
 
 ## Milestone 7 — Integrated validation and v0.3.0 release
 

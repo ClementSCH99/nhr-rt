@@ -1,5 +1,5 @@
 {
-  "test_description": "UNAPPROVED CC with critical BMS temperature and isolation interlocks",
+  "test_description": "UNAPPROVED SoP-limited current charge example",
   "bench_description": "REPLACE_WITH_REVIEWED_BENCH_DESCRIPTION",
   "stop_procedure": "REPLACE_WITH_REVIEWED_STOP_PROCEDURE",
   "expected_resource": "REPLACE_WITH_RESOURCE",
@@ -20,14 +20,23 @@
     "max_current_a": 2.0,
     "max_power_w": 250.0,
     "max_stage_duration_s": 60.0,
-    "max_sequence_duration_s": 60.0,
-    "post_sequence_rest_s": 5.0,
+    "max_sequence_duration_s": 70.0,
+    "post_sequence_rest_s": 10.0,
     "approved": false,
-    "profile_name": "UNAPPROVED CC workflow"
+    "profile_name": "UNAPPROVED SoP workflow"
+  },
+  "sop_control": {
+    "source_id": "bms-main",
+    "charge_signal": "charge_sop_w",
+    "discharge_signal": "discharge_sop_w",
+    "max_age_s": 2.0,
+    "min_charge_w": 100.0,
+    "min_discharge_w": 100.0,
+    "low_cycles": 2
   },
   "stages": [
     {
-      "name": "constant-current",
+      "name": "sop-limited-charge",
       "type": "constant_current",
       "duration_s": 30.0,
       "mode": "charge",
@@ -36,35 +45,7 @@
       "power_w": 250.0,
       "voltage_limit_enabled": true,
       "current_limit_enabled": true,
-      "power_limit_enabled": false,
-      "termination": {
-        "field": "voltage",
-        "operator": ">=",
-        "value": 94.0,
-        "relative": false
-      }
-    }
-  ],
-  "external_interlocks": [
-    {
-      "rule_id": "isolation-permissive",
-      "source_id": "bms",
-      "signal": "isolation_ok",
-      "comparison": "equals",
-      "expected": true,
-      "unit": "bool",
-      "applies": "both",
-      "max_age_s": 1.0
-    },
-    {
-      "rule_id": "cell-temperature",
-      "source_id": "bms",
-      "signal": "max_cell_temperature_c",
-      "comparison": "maximum",
-      "maximum": 40.0,
-      "unit": "degC",
-      "applies": "both",
-      "max_age_s": 1.0
+      "power_limit_enabled": true
     }
   ]
 }

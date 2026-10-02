@@ -321,6 +321,20 @@ def test_renewal_stops_once_lease_covers_approved_stage_end() -> None:
         _close(instrument)
 
 
+def test_lease_expiring_at_stage_duration_is_renewed_for_final_rest_transition() -> None:
+    instrument, _, _, _, _, supervisor, measurement = _active_runtime()
+    try:
+        now = time.monotonic()
+        supervisor._stage["deadline_monotonic"] = now + 10
+        instrument._armed_until = supervisor._stage["deadline_monotonic"]
+        supervisor.checkpoint(measurement)
+        assert supervisor.snapshot()["renewal_count"] == 1
+        assert instrument.read_status().armed_until_monotonic > supervisor._stage["deadline_monotonic"]
+    finally:
+        supervisor.close("test_complete")
+        _close(instrument)
+
+
 def test_rest_duration_begins_after_disabled_setup(tmp_path, monkeypatch) -> None:
     instrument = NHR9300(
         "rest-sim", SimulatedBackend("rest-sim", initial_voltage_v=90),

@@ -33,7 +33,7 @@ def _short_profile(tmp_path: Path, *, charge_value: float | None = None) -> Path
     # Keep the instructions and limits; shorten only this isolated simulation.
     for stage in data["stages"]:
         stage["duration_s"] = 0.25
-    data["workflow_limits"]["post_sequence_rest_s"] = 0
+    data["workflow_limits"]["post_sequence_rest_s"] = 0.1
     path = tmp_path / "workflow.json"
     path.write_text(json.dumps(data), encoding="utf-8")
     csv_path = tmp_path / "profiles/orca_duty_mod.csv"
@@ -72,7 +72,7 @@ def _run(tmp_path: Path, *, min_v=3.0, max_temp=30.0, submit=True, complete=True
         result = SequenceRunner(
             instrument, collector,
             external_signal_reader=interlocks.read_termination_signal,
-        ).run(configuration.sequence(configure_limits=True)[:3])
+        ).run(configuration.sequence(configure_limits=True))
         status = instrument.read_status()
     finally:
         instrument.close()
@@ -97,7 +97,8 @@ def test_approved_orca_bundle_reuses_one_immutable_csv(tmp_path) -> None:
 def test_three_orca_passes_finish_at_csv_end_with_bms_healthy(tmp_path) -> None:
     result, status = _run(tmp_path)
     assert result.state == RoutineState.PASSED, result.reason
-    assert [stage.termination_reason for stage in result.stages] == ["profile_end"] * 3
+    assert [stage.termination_reason for stage in result.stages[:3]] == ["profile_end"] * 3
+    assert result.stages[-1].state == RoutineState.PASSED
     assert all(stage.termination_measurement is not None for stage in result.stages)
     assert status.enabled is False
     with Path(result.global_csv_path).open(newline="", encoding="utf-8") as handle:
@@ -118,6 +119,8 @@ def test_orca_normal_bms_threshold_ends_first_stage(tmp_path, min_v, max_temp, f
     assert result.stages[0].termination_reason == "condition"
     assert result.stages[0].termination_field == field
     assert result.stages[0].termination_detail["trigger"]["source_sequence"] == 1
+    assert [stage.termination_reason for stage in result.stages[:3]] == ["condition"] * 3
+    assert result.stages[-1].state == RoutineState.PASSED
     assert status.enabled is False
 
 
@@ -145,8 +148,8 @@ def test_accelerated_orca_profile_renews_with_approved_changes(tmp_path) -> None
     """Run every approved Orca point in simulation with scaled time only."""
     data = json.loads(APPROVED.read_text(encoding="utf-8"))
     for stage in data["stages"]:
-        stage["duration_s"] = 1.01
-    data["workflow_limits"]["post_sequence_rest_s"] = 0
+        stage["duration_s"] = 1.5
+    data["workflow_limits"]["post_sequence_rest_s"] = 0.1
     path = tmp_path / "workflow.json"
     path.write_text(json.dumps(data), encoding="utf-8")
     source = APPROVED.parent / "profiles/orca_duty_mod.csv"

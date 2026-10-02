@@ -91,8 +91,12 @@ class SimulatedBackend:
                     candidates.append(self.setpoints.power / self._voltage_v)
                 if self.setpoints.current_enabled:
                     candidates.append(self.setpoints.current)
-            elif self.setpoints.current_enabled:
-                candidates.append(self.setpoints.current)
+            else:
+                if self.setpoints.current_enabled:
+                    candidates.append(self.setpoints.current)
+                if (self.setpoints.power_ceiling_enforced
+                        and self.setpoints.power_enabled and self._voltage_v > 0.0):
+                    candidates.append(self.setpoints.power / self._voltage_v)
             if not candidates:
                 return 0.0
             magnitude = min(candidates)
@@ -248,6 +252,7 @@ class SimulatedBackend:
             power_slew_rate=self.setpoints.power_slew_rate,
             resistance_slew_rate=self.setpoints.resistance_slew_rate,
             control_mode=self.setpoints.control_mode,
+            power_ceiling_enforced=self.setpoints.power_ceiling_enforced,
         )
 
     def set_watchdog(self, enabled: bool) -> None:
